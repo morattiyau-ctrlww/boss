@@ -113,7 +113,7 @@ it. Modes:
 http://localhost:8000/index.html#cap=dodge
 ```
 
-All fourteen modes pass together — 49 in-browser checks, 0 uncaught errors. What
+All fourteen modes pass together — 51 in-browser checks, 0 uncaught errors. What
 they measure on this machine (software GL in headless Chrome; a real GPU is far
 quicker): ~150-166 draw calls and ~4.5-5.5k triangles per frame, 0 NaNs anywhere
 in the scene graph, and a frame at mean luma ~0.22 where bloom raises the
