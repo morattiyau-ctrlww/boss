@@ -1,0 +1,2032 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>NEON DUEL — a 3D boss battle</title>
+<meta name="description" content="A stylized low-poly 3D boss battle: read the telegraphed strike, dodge, cut, cast. One HTML file, Three.js.">
+<style>
+/* ==========================================================================
+   NEON DUEL — interface.
+   Dark glass panels, hairline neon rules, glowing type. Everything floats
+   over one full-bleed WebGL canvas, so no element here paints a background
+   larger than it needs to.
+   ========================================================================== */
+:root{
+  --ink:#04050c;
+  --cyan:#6ff2ff; --cyan-dim:#1b5f70;
+  --magenta:#ff4fd8; --gold:#ffd166;
+  --red:#ff3b52; --ice:#5fd0ff; --fire:#ff6a1e;
+  --glass:rgba(10,15,28,.52);
+  --line:rgba(120,220,255,.26);
+  --font:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%;overflow:hidden;background:var(--ink);color:#eaf6ff;
+  font:400 13px/1.4 var(--font);-webkit-font-smoothing:antialiased;
+  -webkit-tap-highlight-color:transparent;touch-action:manipulation;user-select:none;
+  cursor:crosshair}
+canvas{display:block;position:fixed;inset:0}
+
+/* ---- shared bits ---------------------------------------------------------- */
+.panel{background:var(--glass);border:1px solid var(--line);border-radius:12px;
+  backdrop-filter:blur(9px);-webkit-backdrop-filter:blur(9px);
+  box-shadow:0 10px 40px rgba(0,0,0,.55),inset 0 1px 0 rgba(180,240,255,.07)}
+.label{font-size:9.5px;letter-spacing:.22em;text-transform:uppercase;opacity:.62}
+.glow{text-shadow:0 0 12px currentColor,0 0 34px currentColor}
+#hud{position:fixed;inset:0;pointer-events:none;z-index:5}
+#hud>*{pointer-events:auto}
+
+/* ---- boss, top ------------------------------------------------------------ */
+#hudTop{position:absolute;top:16px;left:50%;transform:translateX(-50%);
+  width:min(680px,92vw);padding:11px 15px 13px}
+.row{display:flex;align-items:center;justify-content:space-between;gap:10px}
+#bossName{font-size:14px;letter-spacing:.15em;font-weight:600;flex:1 1 auto;min-width:0;
+  transition:color .4s}
+#bossName b{font-weight:600}
+#bossName .ttl{font-style:normal;font-weight:400;opacity:.72}
+#bossTag{display:flex;align-items:center;gap:7px;flex:0 0 auto}
+#bossDot{width:7px;height:7px;border-radius:50%;background:var(--fire);
+  box-shadow:0 0 10px 2px currentColor;color:var(--fire)}
+#bossWave{font-size:9.5px;letter-spacing:.2em;opacity:.55}
+#bossWave .wv{font-weight:600}
+#bossWave .wv::after{content:" · "}
+.bar{position:relative;height:11px;border-radius:6px;overflow:hidden;margin-top:8px;
+  background:rgba(3,6,14,.86);border:1px solid rgba(150,220,255,.16)}
+.bar .lag,.bar .fill{position:absolute;inset:0 auto 0 0;width:100%;
+  border-radius:5px;transform-origin:left}
+.bar .lag{background:rgba(255,90,110,.5);transition:width .55s cubic-bezier(.2,.7,.3,1) .12s}
+.bar .fill{transition:width .12s linear}
+#bossHpFill{background:linear-gradient(90deg,#ff7a2f,#ff3b52 70%,#ff8fd0)}
+#bossHpFill.ice{background:linear-gradient(90deg,#4fb8ff,#8fe7ff 70%,#d6f6ff)}
+#bossBar.hit{animation:barHit .22s}
+@keyframes barHit{0%{box-shadow:0 0 0 0 rgba(255,255,255,.7)}100%{box-shadow:0 0 0 14px rgba(255,255,255,0)}}
+.spark{position:absolute;top:0;bottom:0;width:26px;pointer-events:none;
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,.85),transparent);
+  opacity:0;transform:translateX(-40px)}
+.spark.on{animation:sweep .5s ease-out}
+@keyframes sweep{from{opacity:.9;transform:translateX(-40px)}
+  to{opacity:0;transform:translateX(var(--w,400px))}}
+
+/* ---- player, bottom ------------------------------------------------------- */
+#hudBottom{position:absolute;bottom:14px;left:0;right:0;display:flex;
+  align-items:flex-end;justify-content:space-between;gap:14px;padding:0 16px}
+#pPanel{flex:0 1 300px;padding:10px 13px 12px;min-width:190px}
+#pHpFill{background:linear-gradient(90deg,#2ee6a8,#7ff0ff 75%,#d8fbff)}
+#pPanel.low #pHpFill{background:linear-gradient(90deg,#ff5a6e,#ffb03a)}
+#pName{font-size:12px;letter-spacing:.2em}
+#hint{font-size:9px;letter-spacing:.12em;opacity:.5;margin-top:7px;white-space:nowrap}
+
+/* ---- attack slots --------------------------------------------------------- */
+#keys{display:flex;gap:10px}
+.slot{position:relative;width:62px;height:62px;flex:none;overflow:hidden;
+  background:var(--glass);border:1px solid var(--line);border-radius:14px;
+  backdrop-filter:blur(9px);-webkit-backdrop-filter:blur(9px);
+  display:grid;place-items:center;color:#cdf3ff;cursor:pointer;
+  transition:transform .09s ease,border-color .2s,box-shadow .2s;
+  box-shadow:0 10px 30px rgba(0,0,0,.5),inset 0 1px 0 rgba(180,240,255,.07)}
+.slot:active,.slot.down{transform:translateY(2px) scale(.96)}
+.slot .glyph{font-size:24px;line-height:1;filter:drop-shadow(0 0 8px currentColor)}
+.slot .key{position:absolute;top:4px;left:7px;font-size:9px;letter-spacing:.1em;opacity:.6}
+.slot .nm{position:absolute;bottom:4px;left:0;right:0;text-align:center;
+  font-size:7.5px;letter-spacing:.12em;opacity:.55}
+.slot .cost{position:absolute;top:4px;right:6px;font-size:8.5px;opacity:.5}
+.slot .cd{position:absolute;inset:0;pointer-events:none;border-radius:13px;
+  background:conic-gradient(from 0deg,rgba(2,5,12,.84) calc(var(--cd,0) * 360deg),transparent 0)}
+.slot[data-act=quick]{color:#9df5ff;border-color:rgba(110,240,255,.4)}
+.slot[data-act=heavy]{color:#ffd166;border-color:rgba(255,209,102,.4)}
+.slot[data-act=bolt]{color:#e79dff;border-color:rgba(231,157,255,.4)}
+.slot.ready{box-shadow:0 0 18px -2px currentColor,0 10px 30px rgba(0,0,0,.5)}
+.slot.ready::after{content:"";position:absolute;inset:0;border-radius:14px;
+  border:1px solid currentColor;opacity:0;animation:readyPulse 1.6s ease-out infinite}
+@keyframes readyPulse{0%{opacity:.55;transform:scale(1)}100%{opacity:0;transform:scale(1.22)}}
+.slot.cool{filter:saturate(.35) brightness(.72)}
+
+/* ---- touch controls ------------------------------------------------------- */
+#dpad{display:none;gap:10px}
+#dpad button{width:62px;height:62px;font-size:22px;color:#bff0ff;
+  background:var(--glass);border:1px solid var(--line);border-radius:14px;
+  backdrop-filter:blur(9px);box-shadow:0 10px 30px rgba(0,0,0,.5)}
+#dpad button:active{transform:translateY(2px) scale(.96);color:#fff}
+body.touch #dpad{display:flex}
+body.touch #hint{display:none}
+
+/* ---- combo ---------------------------------------------------------------- */
+#combo{position:absolute;top:96px;left:50%;transform:translate(-50%,0) scale(.6);
+  text-align:center;opacity:0;transition:opacity .18s}
+#combo.on{opacity:1}
+#comboN{font-size:40px;font-weight:700;color:var(--gold);line-height:.9}
+#comboL{font-size:9px;letter-spacing:.34em;color:#ffe6a8;opacity:.85}
+#combo.pop{animation:pop .26s ease-out}
+@keyframes pop{0%{transform:translate(-50%,0) scale(1.42)}100%{transform:translate(-50%,0) scale(1)}}
+
+/* ---- floating damage ------------------------------------------------------ */
+#dmgLayer{position:absolute;inset:0;overflow:hidden}
+.dmg{position:absolute;font-size:17px;font-weight:700;transform:translate(-50%,-50%);
+  color:#fff;text-shadow:0 0 10px currentColor,0 2px 6px rgba(0,0,0,.9);will-change:transform,opacity}
+.dmg.crit{font-size:29px;color:var(--gold)}
+.dmg.hurt{color:#ff6b7d}
+.dmg.magic{color:#e7a6ff}
+
+/* ---- banners & overlays --------------------------------------------------- */
+#banner{position:absolute;top:32%;left:0;right:0;text-align:center;opacity:0;
+  transition:opacity .3s;pointer-events:none!important}
+#banner.on{opacity:1}
+#banner b{display:block;font-size:clamp(30px,7vw,62px);letter-spacing:.16em;font-weight:700}
+#banner i{display:block;font-style:normal;font-size:11px;letter-spacing:.3em;
+  opacity:.8;margin-top:6px}
+#banner.win b{color:var(--gold);text-shadow:0 0 26px #ffb43c,0 0 70px #ff7a1e}
+#banner.lose b{color:var(--red);text-shadow:0 0 26px #ff3355,0 0 70px #7a0020}
+#banner.wave b{color:var(--cyan);text-shadow:0 0 26px #35dfff,0 0 70px #0d6a8c}
+#over{position:absolute;inset:0;display:grid;place-content:center;text-align:center;
+  background:radial-gradient(circle at 50% 45%,rgba(4,6,14,.55),rgba(3,4,10,.93));
+  opacity:0;pointer-events:none!important;transition:opacity .45s}
+#over.on{opacity:1}
+#over h1{font-size:clamp(34px,8vw,74px);letter-spacing:.2em;font-weight:700}
+#over.win h1{color:var(--gold);text-shadow:0 0 30px #ffb43c,0 0 90px #ff7300}
+#over.lose h1{color:var(--red);text-shadow:0 0 30px #ff3355,0 0 90px #8a0022}
+#over p{margin-top:12px;font-size:11px;letter-spacing:.26em;opacity:.75}
+#over .stats{margin-top:20px;display:flex;gap:26px;justify-content:center;flex-wrap:wrap}
+#over .stats div{min-width:96px}
+#over .stats b{display:block;font-size:22px;color:var(--cyan)}
+#over .again{margin-top:26px;font-size:12px;letter-spacing:.28em;color:#fff;
+  animation:blink 1.7s ease-in-out infinite}
+@keyframes blink{0%,100%{opacity:.35}50%{opacity:1}}
+
+/* ---- full-screen feedback ------------------------------------------------- */
+#vig,#flash{position:fixed;inset:0;pointer-events:none!important;z-index:6;opacity:0}
+#vig{background:radial-gradient(ellipse at 50% 52%,transparent 52%,rgba(255,20,50,.62) 100%)}
+#flash{mix-blend-mode:screen;background:#fff}
+#boot{position:fixed;inset:0;display:grid;place-items:center;text-align:center;
+  z-index:9;background:var(--ink);color:#cfefff;gap:10px}
+#boot small{display:block;opacity:.6;margin-top:10px;font-size:10.5px;letter-spacing:.16em}
+#probe{display:none}
+
+/* ---- narrow screens ------------------------------------------------------- */
+@media(max-width:700px){
+  #hudTop{width:94vw;top:10px;padding:9px 12px 11px}
+  /* The name and the wave tag together are wider than a phone: let the name
+     shrink and the row wrap, instead of pushing the HP bar off the screen. */
+  #hudTop .row{flex-wrap:wrap;gap:2px 8px}
+  #bossName{font-size:10.5px;letter-spacing:.08em;flex:1 1 auto;min-width:0}
+  #bossName .ttl{display:none}          /* the title is the first thing to go */
+  #bossTag{flex:0 0 auto}
+  #hudBottom{flex-wrap:wrap;gap:10px;padding:0 10px 10px}
+  #pPanel{order:-1;flex:1 1 100%;min-width:0}
+  #keys .slot,#dpad button{width:56px;height:56px}
+  #combo{top:104px}
+}
+@media(max-width:420px){
+  /* A narrow phone has to fit a dodge pad and three attacks side by side. */
+  #keys{gap:7px}
+  #dpad{gap:7px}
+  #keys .slot,#dpad button{width:48px;height:48px;border-radius:11px}
+  .slot .glyph{font-size:19px}
+  .slot .nm{font-size:6.5px;letter-spacing:.06em}
+  #bossWave{font-size:8.5px;letter-spacing:.1em}
+  #bossWave .wv{display:none}          /* "240 / 240" fits where "WAVE 9 · …" does not */
+}
+</style>
+</head>
+<body>
+<div id="hud">
+  <section id="hudTop" class="panel">
+    <div class="row">
+      <span id="bossName" class="glow"><b></b><i class="ttl"></i></span>
+      <span id="bossTag"><span id="bossWave"></span><span id="bossDot"></span></span>
+    </div>
+    <div class="bar" id="bossBar">
+      <div class="lag" id="bossHpLag"></div>
+      <div class="fill" id="bossHpFill"></div>
+      <div class="spark" id="bossSpark"></div>
+    </div>
+  </section>
+  <div id="combo"><div id="comboN">×2</div><div id="comboL">COMBO</div></div>
+  <div id="dmgLayer"></div>
+  <div id="hudBottom">
+    <div id="dpad">
+      <button id="dL" aria-label="Dodge left">◀</button>
+      <button id="dR" aria-label="Dodge right">▶</button>
+    </div>
+    <section id="pPanel" class="panel">
+      <div class="row"><span id="pName">YOU</span><span id="pTag" class="label">HP 100</span></div>
+      <div class="bar" id="pBar">
+        <div class="lag" id="pHpLag"></div>
+        <div class="fill" id="pHpFill"></div>
+      </div>
+      <div id="hint">← → / A D DODGE &nbsp;·&nbsp; J SLASH &nbsp;K STRIKE &nbsp;L BOLT</div>
+    </section>
+    <div id="keys">
+      <button class="slot" data-act="quick" aria-label="Quick slash">
+        <span class="cd"></span><span class="key">J</span><span class="glyph">⚔</span><span class="nm">SLASH</span></button>
+      <button class="slot" data-act="heavy" aria-label="Heavy strike">
+        <span class="cd"></span><span class="key">K</span><span class="glyph">✦</span><span class="nm">STRIKE</span></button>
+      <button class="slot" data-act="bolt" aria-label="Magic bolt">
+        <span class="cd"></span><span class="key">L</span><span class="glyph">✸</span><span class="nm">BOLT</span></button>
+    </div>
+  </div>
+</div>
+<div id="banner"><b>VICTORY</b><i></i></div>
+<div id="over"><h1>DEFEATED</h1><div class="stats"></div><div class="again">PRESS R &nbsp;/&nbsp; TAP TO RISE</div></div>
+<div id="vig"></div><div id="flash"></div>
+<div id="boot">SYNTHESISING ARENA
+  <small>loading three.js from CDN…</small></div>
+<div id="probe"></div>
+<script type="importmap">
+{"imports":{
+  "three":"https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"
+}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+/* ==== PURE-LOGIC-START ==== */
+/* Every rule of the fight lives in here: no DOM, no three.js, no globals.
+   tests/logic.test.js lifts this block straight out of the HTML and exercises
+   it in Node, which is why the interesting half of the game is testable at all. */
+const LOGIC = (() => {
+  const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+  const lerp = (a, b, t) => a + (b - a) * t;
+  /* Frame-rate independent smoothing: damp(a,b,8,dt) covers the same ground
+     whether dt arrives as one 1s step or sixty 1/60s steps. */
+  const damp = (a, b, lambda, dt) => lerp(a, b, 1 - Math.exp(-lambda * dt));
+
+  /* Small, fast, seedable PRNG. Deterministic captures and tests both need it. */
+  function mulberry32(seed) {
+    let s = seed >>> 0;
+    return () => {
+      s = (s + 0x6d2b79f5) | 0;
+      let t = Math.imul(s ^ (s >>> 15), s | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  /* ---- the three moves --------------------------------------------------- */
+  const ACTIONS = {
+    quick: { dmg: 9,  cd: 0.42, windup: 0.10, hit: 0.16, kind: 'slash' },
+    heavy: { dmg: 26, cd: 3.20, windup: 0.30, hit: 0.42, kind: 'heavy' },
+    bolt:  { dmg: 14, cd: 1.30, windup: 0.14, hit: 0.22, kind: 'magic' },
+  };
+
+  /* ---- the two bosses ---------------------------------------------------- */
+  const BOSSES = [
+    { id: 'demon', name: 'PYROTH',  title: 'THE FLAME DEMON', hp: 240, dmg: 18,
+      telegraph: 1.5, strikeHold: 0.5, recover: 1.75, windup: 0.55 },
+    { id: 'ice',   name: 'KRYOS',   title: 'THE ICE TITAN',   hp: 270, dmg: 22,
+      telegraph: 1.5, strikeHold: 0.6, recover: 1.95, windup: 0.70 },
+  ];
+
+  /* Never the same boss twice in a row, so a run always shows both faces. */
+  function rollBoss(rng, lastId) {
+    const pool = BOSSES.filter((b) => b.id !== lastId);
+    return pool[Math.floor(rng() * pool.length) % pool.length];
+  }
+
+  /* Each kill makes the next boss meaner: more HP, shorter recovery, heavier
+     hits. Telegraph time is deliberately NOT scaled — 1.5s stays readable. */
+  function planFor(def, index) {
+    return {
+      def, index, hp: Math.round(def.hp * (1 + 0.12 * index)),
+      dmg: def.dmg + index, telegraph: def.telegraph, strikeHold: def.strikeHold,
+      recover: Math.max(0.62, def.recover - 0.09 * index), windup: def.windup,
+    };
+  }
+
+  /* ---- sides ------------------------------------------------------------- */
+  const sideOf = (x) => (x < 0 ? 'left' : 'right');
+  const otherSide = (s) => (s === 'left' ? 'right' : 'left');
+  /* The whole fight in one line: you are safe on the side the boss is not. */
+  const isSafe = (attackSide, playerSide) => attackSide !== playerSide;
+
+  /* ---- damage ------------------------------------------------------------ */
+  /* Combo builds a small multiplier, capped so it never trivialises the fight. */
+  const comboMult = (combo, step = 0.03, cap = 10) => 1 + Math.min(combo, cap) * step;
+  const CRIT_CHANCE = 0.18, CRIT_MULT = 1.9;
+
+  function hitFor(move, combo, rng) {
+    const a = ACTIONS[move];
+    const crit = rng() < CRIT_CHANCE;
+    const raw = a.dmg * comboMult(combo) * (crit ? CRIT_MULT : 1);
+    return { move, crit, amount: Math.max(1, Math.round(raw)) };
+  }
+
+  /* Hits taken ignore the combo multiplier — only the boss's own damage. */
+  const incoming = (dmg, hp) => Math.max(0, hp - dmg);
+
+  /* ---- combo bookkeeping ------------------------------------------------- */
+  const COMBO_WINDOW = 2.5;
+  const comboTick = (combo, t, lastHit, window = COMBO_WINDOW) =>
+    (t - lastHit > window ? 0 : combo);
+  const comboAfterHit = (combo, t, lastHit, window = COMBO_WINDOW) =>
+    (t - lastHit > window ? 1 : combo + 1);
+
+  /* ---- cooldowns --------------------------------------------------------- */
+  const readyAt = (now, cd) => now + cd;
+  const isReady = (now, at) => now >= at;
+  const cdFraction = (now, at, cd) => clamp((at - now) / cd, 0, 1);
+
+  /* ---- the boss attack state machine ------------------------------------- */
+  /* idle -> telegraph (1.5s of warning) -> strike (resolve) -> idle.
+     s is a plain object so this can run in a test just as well as on screen. */
+  function bossInit(plan, rng) {
+    return { phase: 'idle', t: 0, side: 'left', plan, rng, strikes: 0 };
+  }
+  function bossStep(s, dt) {
+    const ev = [];
+    s.t += dt;
+    if (s.phase === 'idle') {
+      if (s.t >= s.plan.recover) {
+        s.phase = 'telegraph'; s.t = 0;
+        s.side = s.rng() < 0.5 ? 'left' : 'right';
+        ev.push({ type: 'telegraph', side: s.side });
+      }
+    } else if (s.phase === 'telegraph') {
+      if (s.t >= s.plan.telegraph) {
+        s.phase = 'strike'; s.t = 0; s.strikes++;
+        ev.push({ type: 'strike', side: s.side });
+      }
+    } else if (s.phase === 'strike') {
+      if (s.t >= s.plan.strikeHold) {
+        s.phase = 'idle'; s.t = 0; ev.push({ type: 'recover' });
+      }
+    }
+    return ev;
+  }
+  /* How far through the warning we are, 0..1 — drives the ground zone's pulse. */
+  const telegraphT = (s) => (s.phase === 'telegraph' ? clamp(s.t / s.plan.telegraph, 0, 1) : 0);
+
+  return { clamp, lerp, damp, mulberry32, ACTIONS, BOSSES, rollBoss, planFor, sideOf,
+    otherSide, isSafe, comboMult, hitFor, incoming, CRIT_CHANCE, CRIT_MULT,
+    COMBO_WINDOW, comboTick, comboAfterHit, readyAt, isReady, cdFraction,
+    bossInit, bossStep, telegraphT };
+})();
+/* ==== PURE-LOGIC-END ==== */
+
+/* Tuning for everything you can see. Kept out of the logic block on purpose:
+   that block is rules, this is taste. */
+const CFG = {
+  arena: 9.2,           // floor radius
+  slot: 2.65,           // how far either side a dodge commits you
+  pz: 2.75, bz: -1.95,  // player and boss resting Z
+  playerHp: 100,
+  seed: 20260214,
+};
+const errs = [];
+window.addEventListener('error', (e) => errs.push(String(e.message)));
+window.addEventListener('unhandledrejection', (e) => errs.push('promise: ' + e.reason));
+/* #cap=<mode>&seed=<n> pins a deterministic frame, for verification. */
+const CAP = (() => {
+  const h = new URLSearchParams(location.hash.replace(/^#/, ''));
+  const q = new URLSearchParams(location.search);
+  const mode = h.get('cap') || (q.has('cap') ? q.get('cap') : null);
+  const seed = parseInt(h.get('seed') || q.get('seed') || CFG.seed, 10);
+  return { mode, seed: Number.isFinite(seed) ? seed : CFG.seed };
+})();
+const RNG = LOGIC.mulberry32(CAP.seed);
+const boot = document.getElementById('boot');
+function fatal(msg) {
+  boot.innerHTML = 'ARENA FAILED TO LOAD<small>' + String(msg) + '</small>';
+  throw new Error(msg);
+}
+
+/* ============================ renderer & stage ============================ */
+const canvas = document.createElement('canvas');
+document.body.appendChild(canvas);
+let renderer;
+try {
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: true,
+    powerPreference: 'high-performance',
+    /* A capture renders exactly one frame and then stops, and headless Chrome
+       still has to be able to photograph it — hence the preserved buffer. */
+    preserveDrawingBuffer: !!CAP.mode });
+} catch (e) { fatal('WebGL unavailable: ' + e.message); }
+const DPR = Math.min(window.devicePixelRatio || 1, 2);
+renderer.setPixelRatio(DPR);
+renderer.setSize(innerWidth, innerHeight);
+/* The composer renders several passes per frame and every one of them would
+   reset these counters, so the frame total is accumulated by hand instead. */
+renderer.info.autoReset = false;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;   // filmic roll-off keeps the glow from clipping
+renderer.toneMappingExposure = 1.06;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x04050c);
+scene.fog = new THREE.FogExp2(0x05070f, 0.021);
+const camera = new THREE.PerspectiveCamera(48, innerWidth / innerHeight, 0.1, 140);
+
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.82, 0.62, 0.60);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  composer.setSize(innerWidth, innerHeight);
+  bloom.resolution.set(innerWidth, innerHeight);
+});
+
+/* A tiny procedural studio, filtered by PMREM. Without an environment the
+   metal and crystal would be black holes; with it, one canvas lights the world. */
+function makeEnv() {
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 128;
+  const g = c.getContext('2d');
+  const sky = g.createLinearGradient(0, 0, 0, 128);
+  sky.addColorStop(0.00, '#04060e'); sky.addColorStop(0.45, '#0a1636');
+  sky.addColorStop(0.62, '#15406b'); sky.addColorStop(0.70, '#0a0f1c');
+  sky.addColorStop(1.00, '#020308');
+  g.fillStyle = sky; g.fillRect(0, 0, 256, 128);
+  const panel = (x, y, w, h, col) => { g.fillStyle = col; g.fillRect(x, y, w, h); };
+  panel(16, 40, 30, 12, '#8ff7ff'); panel(112, 34, 24, 14, '#ff63dd');
+  panel(196, 44, 26, 10, '#eaf8ff'); panel(64, 96, 90, 6, '#123a55');
+  const t = new THREE.CanvasTexture(c);
+  t.mapping = THREE.EquirectangularReflectionMapping;
+  t.colorSpace = THREE.SRGBColorSpace;
+  const pm = new THREE.PMREMGenerator(renderer);
+  const env = pm.fromEquirectangular(t).texture;
+  pm.dispose(); t.dispose();
+  return env;
+}
+scene.environment = makeEnv();
+
+/* ============================== the arena ================================= */
+const world = new THREE.Group();
+scene.add(world);
+const R = CFG.arena;
+
+/* Floor: dark, faintly polished stone that picks up the neon panels above it. */
+const floor = new THREE.Mesh(new THREE.CircleGeometry(R, 64),
+  new THREE.MeshStandardMaterial({ color: 0x090c18, roughness: 0.42, metalness: 0.55, envMapIntensity: 0.5 }));
+floor.rotation.x = -Math.PI / 2;
+floor.receiveShadow = true;
+world.add(floor);
+
+/* Neon rings + spokes, drawn as lines: cheap, crisp, unmistakably a game. */
+function neonLines() {
+  const pts = [];
+  for (let r = 1.6; r < R; r += 1.6) {
+    for (let i = 0; i < 64; i++) {
+      const a0 = (i / 64) * Math.PI * 2, a1 = ((i + 1) / 64) * Math.PI * 2;
+      pts.push(Math.cos(a0) * r, 0.012, Math.sin(a0) * r, Math.cos(a1) * r, 0.012, Math.sin(a1) * r);
+    }
+  }
+  for (let i = 0; i < 24; i++) {
+    const a = (i / 24) * Math.PI * 2;
+    pts.push(Math.cos(a) * 1.6, 0.012, Math.sin(a) * 1.6, Math.cos(a) * R, 0.012, Math.sin(a) * R);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+  return new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0x2fd8ff,
+    transparent: true, opacity: 0.17, blending: THREE.AdditiveBlending, depthWrite: false }));
+}
+world.add(neonLines());
+
+/* A bright rim and a low wall, so the arena reads as a place with an edge. */
+const rim = new THREE.Mesh(new THREE.TorusGeometry(R, 0.055, 6, 96),
+  new THREE.MeshBasicMaterial({ color: 0x59e9ff, blending: THREE.AdditiveBlending, depthWrite: false }));
+rim.rotation.x = -Math.PI / 2; rim.position.y = 0.05;
+world.add(rim);
+/* A low wall and short pillars: the camera orbits just outside the rim, so
+   nothing may stand tall enough to cut the sightline across the arena. */
+const wall = new THREE.Mesh(new THREE.CylinderGeometry(R + 0.05, R + 0.05, 4.0, 48, 1, true),
+  new THREE.MeshStandardMaterial({ color: 0x080a14, roughness: 0.85, metalness: 0.2, side: THREE.BackSide }));
+wall.position.y = 2.0;
+world.add(wall);
+
+/* Ten slabs around the rim: silhouette, and something for the fog to eat. */
+const pillarGeo = new THREE.BoxGeometry(0.55, 4.6, 0.55);
+const pillarMat = new THREE.MeshStandardMaterial({ color: 0x0b0f1e, roughness: 0.7, metalness: 0.35 });
+const stripMat = new THREE.MeshBasicMaterial({ color: 0x2ad4ff, blending: THREE.AdditiveBlending,
+  transparent: true, opacity: 0.75 });
+const stripGeo = new THREE.BoxGeometry(0.07, 3.6, 0.07);
+for (let i = 0; i < 10; i++) {
+  const a = (i / 10) * Math.PI * 2 + 0.3;
+  const x = Math.cos(a) * (R - 0.4), z = Math.sin(a) * (R - 0.4);
+  const p = new THREE.Mesh(pillarGeo, pillarMat);
+  p.position.set(x, 2.3, z);
+  p.rotation.y = -a;
+  const strip = new THREE.Mesh(stripGeo, stripMat);
+  strip.position.set(x * 0.985, 2.35, z * 0.985);
+  world.add(p, strip);
+}
+
+/* ============================== lighting ================================== */
+/* One shadow caster keeps the ground shadow clean; everything else is colour. */
+const key = new THREE.DirectionalLight(0xbcd6ff, 1.15);
+key.position.set(6, 12, 7);
+key.castShadow = true;
+key.shadow.mapSize.set(1024, 1024);
+key.shadow.camera.near = 1; key.shadow.camera.far = 42;
+key.shadow.camera.left = -12; key.shadow.camera.right = 12;
+key.shadow.camera.top = 12; key.shadow.camera.bottom = -12;
+key.shadow.bias = -0.0012;
+scene.add(key);
+const cyanLight = new THREE.PointLight(0x35d9ff, 26, 24, 2.2);
+cyanLight.position.set(-7.6, 3.6, -4.4);
+const magentaLight = new THREE.PointLight(0xff4fd8, 22, 24, 2.2);
+magentaLight.position.set(7.6, 3.4, -4.4);
+scene.add(cyanLight, magentaLight, new THREE.HemisphereLight(0x2a4a7a, 0x05060c, 0.55));
+/* A warm bounce where the two fighters meet: it lifts both silhouettes. */
+const stageLight = new THREE.PointLight(0xffa860, 16, 16, 2);
+stageLight.position.set(0, 2.2, 0.4);
+scene.add(stageLight);
+
+/* ============================== effects =================================== */
+/* One additive Points cloud serves every burst, spark, debris chunk and
+   sparkle in the game. Particles are integrated on the CPU and written
+   straight into the buffer; dead slots are given size 0, so they cost nothing
+   on the GPU. Custom attribute names (aColor/aSize) keep the shader clear of
+   anything three's own prefix might declare. */
+const MAXP = 1500;
+const pPos = new Float32Array(MAXP * 3), pCol = new Float32Array(MAXP * 3), pSize = new Float32Array(MAXP);
+const pVel = new Float32Array(MAXP * 3), pLife = new Float32Array(MAXP), pMax = new Float32Array(MAXP);
+const pGrav = new Float32Array(MAXP), pDrag = new Float32Array(MAXP), pGrow = new Float32Array(MAXP);
+const pBaseR = new Float32Array(MAXP), pBaseG = new Float32Array(MAXP), pBaseB = new Float32Array(MAXP);
+let pCursor = 0;
+
+const pGeo = new THREE.BufferGeometry();
+const dyn = THREE.DynamicDrawUsage;
+pGeo.setAttribute('position', new THREE.BufferAttribute(pPos, 3).setUsage(dyn));
+pGeo.setAttribute('aColor', new THREE.BufferAttribute(pCol, 3).setUsage(dyn));
+pGeo.setAttribute('aSize', new THREE.BufferAttribute(pSize, 1).setUsage(dyn));
+const pMat = new THREE.ShaderMaterial({
+  transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  vertexShader: `
+    attribute vec3 aColor; attribute float aSize; varying vec3 vC;
+    void main(){
+      vC = aColor;
+      vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      gl_PointSize = aSize * (300.0 / max(0.001, -mv.z));
+      gl_Position = projectionMatrix * mv;
+    }`,
+  fragmentShader: `
+    varying vec3 vC;
+    void main(){
+      float d = length(gl_PointCoord - 0.5);
+      if (d > 0.5) discard;
+      float a = smoothstep(0.5, 0.0, d); a *= a;   // soft round dot
+      gl_FragColor = vec4(vC * a, 1.0);            // additive: rgb is the whole story
+    }`,
+});
+const pointCloud = new THREE.Points(pGeo, pMat);
+pointCloud.frustumCulled = false;
+scene.add(pointCloud);
+
+/* o = {x,y,z,count,color,speed,spread,size,size1,life,grav,drag,dir:[x,y,z],up} */
+function burst(o) {
+  const c = new THREE.Color(o.color || 0xffffff);
+  const n = o.count || 12, spd = o.speed == null ? 4 : o.speed;
+  const spread = o.spread == null ? 1 : o.spread, life = o.life || 0.7;
+  const s0 = o.size || 0.16, s1 = o.size1 == null ? 0 : o.size1;
+  const dir = o.dir, up = o.up || 0;
+  for (let k = 0; k < n; k++) {
+    const i = pCursor; pCursor = (pCursor + 1) % MAXP;
+    const i3 = i * 3;
+    const th = Math.random() * Math.PI * 2, ph = Math.acos(2 * Math.random() - 1);
+    let vx = Math.sin(ph) * Math.cos(th), vy = Math.cos(ph) * 0.7 + up, vz = Math.sin(ph) * Math.sin(th);
+    if (dir) { vx = vx * spread + dir[0]; vy = vy * spread + dir[1]; vz = vz * spread + dir[2]; }
+    else { vx *= spread; vy *= spread; vz *= spread; }
+    const m = spd * (0.55 + Math.random() * 0.85);
+    pPos[i3] = o.x + vx * 0.18; pPos[i3 + 1] = o.y + vy * 0.18; pPos[i3 + 2] = o.z + vz * 0.18;
+    pVel[i3] = vx * m; pVel[i3 + 1] = vy * m; pVel[i3 + 2] = vz * m;
+    const j = 0.75 + Math.random() * 0.5;
+    pBaseR[i] = c.r * j; pBaseG[i] = c.g * j; pBaseB[i] = c.b * j;
+    pSize[i] = s0 * (0.6 + Math.random() * 0.8);
+    pMax[i] = pLife[i] = life * (0.7 + Math.random() * 0.6);
+    pGrav[i] = o.grav == null ? -5.5 : o.grav;
+    pDrag[i] = o.drag == null ? 1.4 : o.drag;
+    pGrow[i] = s1;
+  }
+}
+
+/* Ambient embers: a persistent field that drifts up and wraps around, so the
+   arena always has something alive in the dark. */
+const EMB = 240;
+const embPos = new Float32Array(EMB * 3), embCol = new Float32Array(EMB * 3), embSize = new Float32Array(EMB);
+const embVel = new Float32Array(EMB * 3);
+for (let i = 0; i < EMB; i++) {
+  const a = Math.random() * Math.PI * 2, r = Math.sqrt(Math.random()) * R;
+  embPos[i * 3] = Math.cos(a) * r; embPos[i * 3 + 1] = Math.random() * 7; embPos[i * 3 + 2] = Math.sin(a) * r;
+  const warm = Math.random() < 0.7;
+  const c = new THREE.Color(warm ? 0xff8a3c : 0x63e6ff);
+  embCol[i * 3] = c.r; embCol[i * 3 + 1] = c.g; embCol[i * 3 + 2] = c.b;
+  embSize[i] = 0.05 + Math.random() * 0.09;
+  embVel[i * 3] = (Math.random() - 0.5) * 0.16;
+  embVel[i * 3 + 1] = 0.22 + Math.random() * 0.5;
+  embVel[i * 3 + 2] = (Math.random() - 0.5) * 0.16;
+}
+const embGeo = new THREE.BufferGeometry();
+embGeo.setAttribute('position', new THREE.BufferAttribute(embPos, 3).setUsage(dyn));
+embGeo.setAttribute('aColor', new THREE.BufferAttribute(embCol, 3).setUsage(dyn));
+embGeo.setAttribute('aSize', new THREE.BufferAttribute(embSize, 1).setUsage(dyn));
+const embers = new THREE.Points(embGeo, pMat);
+embers.frustumCulled = false;
+scene.add(embers);
+
+/* ---- expanding ground rings (shockwaves, impacts, spawn pulses) ---------- */
+const ringGeo = new THREE.RingGeometry(0.58, 1, 48);
+const ringPool = [];
+for (let i = 0; i < 10; i++) {
+  const m = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({ color: 0xffffff,
+    transparent: true, opacity: 0, blending: THREE.AdditiveBlending,
+    depthWrite: false, side: THREE.DoubleSide }));
+  m.rotation.x = -Math.PI / 2;
+  m.visible = false;
+  world.add(m);
+  ringPool.push({ m, t: 1, life: 0.6, r0: 0.6, r1: 7, tilt: 0 });
+}
+/* o = {x,z,y,color,r0,r1,life,tilt} — a scaled annulus reads as a shockwave
+   because its thickness grows with its radius, exactly like a real one. */
+function ring(o) {
+  let s = ringPool.find((p) => p.t >= 1);
+  if (!s) s = ringPool[0];
+  s.t = 0;
+  s.life = o.life == null ? 0.55 : o.life;
+  s.r0 = o.r0 == null ? 0.5 : o.r0;
+  s.r1 = o.r1 == null ? 7 : o.r1;
+  s.tilt = o.tilt || 0;
+  s.m.material.color.set(o.color == null ? 0xffffff : o.color);
+  s.m.position.set(o.x || 0, o.y == null ? 0.035 : o.y, o.z || 0);
+  s.m.rotation.set(-Math.PI / 2 + s.tilt, 0, 0);
+  s.m.visible = true;
+  return s;
+}
+
+/* ---- slash crescents: one sector, reused for every sweep in the game ----- */
+/* A sector centred on local +x, so aiming a crescent is just a yaw. */
+const arcGeo = new THREE.RingGeometry(0.4, 1, 40, 1, -0.7, 1.4);
+const arcPool = [];
+for (let i = 0; i < 8; i++) {
+  const m = new THREE.Mesh(arcGeo, new THREE.MeshBasicMaterial({ color: 0xffffff,
+    transparent: true, opacity: 0, blending: THREE.AdditiveBlending,
+    depthWrite: false, side: THREE.DoubleSide }));
+  m.visible = false;
+  world.add(m);
+  arcPool.push({ m, t: 1, life: 0.4, r0: 1, r1: 3.2, flat: 1 });
+}
+/* o = {x,y,z,yaw,color,r0,r1,life,flat} */
+function arc(o) {
+  let s = arcPool.find((p) => p.t >= 1);
+  if (!s) s = arcPool[0];
+  s.t = 0;
+  s.life = o.life == null ? 0.35 : o.life;
+  s.r0 = o.r0 == null ? 0.8 : o.r0;
+  s.r1 = o.r1 == null ? 3.4 : o.r1;
+  s.flat = o.flat == null ? 1 : o.flat;
+  s.m.material.color.set(o.color == null ? 0xffffff : o.color);
+  s.m.position.set(o.x || 0, o.y == null ? 1.1 : o.y, o.z || 0);
+  s.m.rotation.set(-Math.PI / 2 * s.flat, 0, 0);
+  s.m.rotateY(o.yaw || 0);
+  s.m.visible = true;
+  return s;
+}
+
+/* ---- magic bolts: a travelling sphere, its light, and a trail ------------ */
+const boltMat = new THREE.MeshBasicMaterial({ color: 0xdcbcff });
+const boltGeo = new THREE.SphereGeometry(0.2, 12, 10);
+const bolts = [];
+function bolt(o) {
+  const m = new THREE.Mesh(boltGeo, boltMat.clone());
+  m.material.color.set(o.color || 0xc79bff);
+  const light = new THREE.PointLight(o.color || 0xc79bff, 26, 9, 2);
+  m.add(light);
+  scene.add(m);
+  bolts.push({ m, light, from: o.from.clone(), to: o.to.clone(), t: 0,
+    dur: o.dur || 0.34, arc: o.arc == null ? 0.9 : o.arc, color: o.color || 0xc79bff,
+    onHit: o.onHit });
+}
+function updateBolts(dt) {
+  for (let i = bolts.length - 1; i >= 0; i--) {
+    const b = bolts[i];
+    b.t += dt / b.dur;
+    const u = Math.min(1, b.t);
+    const p = new THREE.Vector3().lerpVectors(b.from, b.to, u);
+    p.y += Math.sin(u * Math.PI) * b.arc;
+    b.m.position.copy(p);
+    /* sparkle trail: a couple of motes shed every frame */
+    burst({ x: p.x, y: p.y, z: p.z, count: 2, color: b.color, speed: 1.1,
+      spread: 0.4, size: 0.13, life: 0.34, grav: 1.2, drag: 2.4 });
+    b.m.scale.setScalar(1 + Math.sin(b.t * 32) * 0.08);
+    if (u >= 1) {
+      burst({ x: p.x, y: p.y, z: p.z, count: 26, color: b.color, speed: 7,
+        spread: 0.9, size: 0.22, life: 0.55, grav: -2, drag: 1.6 });
+      ring({ x: p.x, z: p.z, y: p.y, color: b.color, r0: 0.35, r1: 3, life: 0.4, tilt: 0 });
+      scene.remove(b.m); b.m.material.dispose();
+      bolts.splice(i, 1);
+      if (b.onHit) b.onHit(p);
+    }
+  }
+}
+
+/* ---- floating damage numbers (DOM text stays crisp at any zoom) ---------- */
+const dmgLayer = document.getElementById('dmgLayer');
+const dmgPool = [];
+const tmpV = new THREE.Vector3();
+function dmgNumber(o) {
+  let d = dmgPool.find((p) => !p.on);
+  if (!d) {
+    if (dmgPool.length >= 28) d = dmgPool[0];
+    else { d = { el: document.createElement('div'), on: false }; dmgLayer.appendChild(d.el); dmgPool.push(d); }
+  }
+  d.on = true; d.t = 0; d.life = o.life || 0.95;
+  d.v = o.value; d.spin = (Math.random() - 0.5) * 26;
+  d.x = o.x; d.y = o.y; d.z = o.z;
+  d.el.textContent = (o.crit ? '' : '') + o.value + (o.crit ? '!' : '');
+  d.el.className = 'dmg' + (o.crit ? ' crit' : '') + (o.hurt ? ' hurt' : '') + (o.magic ? ' magic' : '');
+  d.el.style.opacity = '1';
+}
+function updateNumbers(dt) {
+  for (const d of dmgPool) {
+    if (!d.on) continue;
+    d.t += dt;
+    if (d.t >= d.life) { d.on = false; d.el.style.opacity = '0'; continue; }
+    const u = d.t / d.life;
+    tmpV.set(d.x, d.y + u * 1.5, d.z).project(camera);
+    if (tmpV.z > 1) { d.el.style.opacity = '0'; continue; }
+    const sx = (tmpV.x * 0.5 + 0.5) * innerWidth, sy = (-tmpV.y * 0.5 + 0.5) * innerHeight;
+    const pop = 1 + Math.max(0, 1 - u * 6) * 0.5;
+    d.el.style.transform = `translate(-50%,-50%) translate(${sx}px,${sy}px) scale(${pop}) rotate(${d.spin * u}deg)`;
+    d.el.style.opacity = String(Math.min(1, (1 - u) * 3));
+  }
+}
+/* A hit spark: the shape of the burst tells you what kind of blow landed. */
+function hitSpark(pos, color, big) {
+  burst({ x: pos.x, y: pos.y, z: pos.z, count: big ? 34 : 16, color, speed: big ? 9 : 5.5,
+    spread: 1, size: big ? 0.26 : 0.17, life: big ? 0.7 : 0.45, grav: -4, drag: 1.8 });
+  ring({ x: pos.x, z: pos.z, y: pos.y, color, r0: 0.25, r1: big ? 4.4 : 1.9, life: big ? 0.45 : 0.3 });
+}
+
+/* ---- camera trauma, slow motion, hit-stop and screen flash --------------- */
+let trauma = 0, timeScale = 1, scaleTarget = 1, scaleHold = 0, hitstop = 0;
+let flashAmt = 0;
+const flashEl = document.getElementById('flash'), vigEl = document.getElementById('vig');
+let vigAmt = 0;
+const shake = (a) => { trauma = Math.min(1.25, trauma + a); };
+const slowmo = (s, dur) => { scaleTarget = s; scaleHold = dur; };
+const hitStop = (t) => { hitstop = Math.max(hitstop, t); };
+const flash = (a) => { flashAmt = Math.max(flashAmt, a); };
+const vignette = (a) => { vigAmt = Math.max(vigAmt, a); };
+
+/* Gameplay runs on scaled time; screens and camera run on real time, so a
+   slow-motion beat never stalls the interface or strands a white flash.
+   The clamping matters more than it looks: a frame delta can arrive as zero or
+   even negative (rAF timestamps may precede the clock read at start-up), and a
+   negative dt would run every decay in this file backwards. */
+function scaledDt(raw) {
+  if (scaleHold > 0) scaleHold -= raw; else scaleTarget = 1;
+  let target = scaleTarget;
+  if (hitstop > 0) { hitstop -= raw; target = 0.05; }
+  timeScale = LOGIC.damp(timeScale, target, 15, raw);
+  return raw * timeScale;
+}
+
+/* ---- deferred one-shots: hit timing, spawn delays, victory beats --------- */
+const timers = [];
+const after = (t, fn) => timers.push({ t, fn });
+function updateTimers(dt) {
+  for (let i = timers.length - 1; i >= 0; i--) {
+    const x = timers[i];
+    x.t -= dt;
+    if (x.t <= 0) { timers.splice(i, 1); x.fn(); }
+  }
+}
+const clearTimers = () => { timers.length = 0; };
+
+/* ---- per-frame effect update -------------------------------------------- */
+function updateParticles(dt) {
+  for (let i = 0; i < MAXP; i++) {
+    const i3 = i * 3;
+    if (pLife[i] <= 0) { if (pSize[i] !== 0) pSize[i] = 0; continue; }
+    pLife[i] -= dt;
+    if (pLife[i] <= 0) { pSize[i] = 0; pCol[i3] = pCol[i3 + 1] = pCol[i3 + 2] = 0; continue; }
+    const d = Math.exp(-pDrag[i] * dt);
+    pVel[i3] *= d; pVel[i3 + 2] *= d;
+    pVel[i3 + 1] = pVel[i3 + 1] * d + pGrav[i] * dt;
+    pPos[i3] += pVel[i3] * dt; pPos[i3 + 1] += pVel[i3 + 1] * dt; pPos[i3 + 2] += pVel[i3 + 2] * dt;
+    if (pPos[i3 + 1] < 0.03 && pGrav[i] < 0) {      // debris skitters instead of sinking
+      pPos[i3 + 1] = 0.03;
+      pVel[i3 + 1] *= -0.34;
+      pVel[i3] *= 0.7; pVel[i3 + 2] *= 0.7;
+    }
+    const f = (pLife[i] / pMax[i]) ** 2;            // fade out fast at the end
+    pCol[i3] = pBaseR[i] * f; pCol[i3 + 1] = pBaseG[i] * f; pCol[i3 + 2] = pBaseB[i] * f;
+    pSize[i] = Math.max(0, pSize[i] + pGrow[i] * dt);
+  }
+  pGeo.attributes.position.needsUpdate = true;
+  pGeo.attributes.aColor.needsUpdate = true;
+  pGeo.attributes.aSize.needsUpdate = true;
+}
+function updateEmbers(dt, t) {
+  for (let i = 0; i < EMB; i++) {
+    const i3 = i * 3;
+    embPos[i3] += (embVel[i3] + Math.sin(t * 0.7 + i) * 0.07) * dt;
+    embPos[i3 + 1] += embVel[i3 + 1] * dt;
+    embPos[i3 + 2] += (embVel[i3 + 2] + Math.cos(t * 0.5 + i) * 0.07) * dt;
+    if (embPos[i3 + 1] > 7.4) {
+      const a = Math.random() * Math.PI * 2, r = Math.sqrt(Math.random()) * R;
+      embPos[i3 + 1] = -0.2;
+      embPos[i3] = Math.cos(a) * r; embPos[i3 + 2] = Math.sin(a) * r;
+    }
+  }
+  embGeo.attributes.position.needsUpdate = true;
+}
+/* Rings and crescents share one shape of animation: grow, thin out, vanish. */
+function updatePooled(dt, pool) {
+  for (const s of pool) {
+    if (s.t >= 1) { if (s.m.visible) s.m.visible = false; continue; }
+    s.t = Math.min(1, s.t + dt / s.life);
+    const e = 1 - (1 - s.t) ** 2;                   // ease-out expansion
+    const r = s.r0 + (s.r1 - s.r0) * e;
+    s.m.scale.setScalar(r);
+    s.m.material.opacity = (1 - s.t) ** 1.6;
+  }
+}
+function updateFx(dt, t, rt) {
+  updateParticles(dt);
+  updateEmbers(dt, t);
+  updateBolts(dt);
+  updatePooled(dt, ringPool);
+  updatePooled(dt, arcPool);
+  updateNumbers(dt);
+  updateTimers(dt);
+  /* These three are screen furniture, so they always run on real time. */
+  trauma = Math.max(0, trauma - rt * 1.7);
+  flashAmt = Math.max(0, flashAmt - rt * 4.5);
+  flashEl.style.opacity = flashAmt > 0.003 ? String(Math.min(0.5, flashAmt)) : '0';
+  vigAmt = Math.max(0, vigAmt - rt * 1.8);
+  vigEl.style.opacity = vigAmt > 0.003 ? String(Math.min(0.7, vigAmt)) : '0';
+}
+
+/* =============================== the player =============================== */
+/* Built from a handful of primitives, all of it procedural. The silhouette
+   does the work: tapered torso, pauldrons, a long coat-tail of a cape, and one
+   very bright sword so the eye always knows where the threat is. */
+const P = {
+  group: new THREE.Group(),
+  hp: CFG.playerHp, maxHp: CFG.playerHp, side: 'right', x: CFG.slot, targetX: CFG.slot,
+  vworld: new THREE.Vector3(), dodgeT: 1, hitFlash: 0,
+  atk: { name: null, t: 0, dur: 0, hit: false },
+  readyAt: { quick: 0, heavy: 0, bolt: 0 },
+  aura: 0,
+};
+scene.add(P.group);
+P.group.position.set(P.x, 0, CFG.pz);
+
+const MAT = {
+  /* Body colour matters more than it looks: navy dark enough to read as armour
+     but light enough to hold a silhouette against a near-black arena. */
+  body: new THREE.MeshStandardMaterial({ color: 0x26314f, roughness: 0.4, metalness: 0.55, envMapIntensity: 1 }),
+  trim: new THREE.MeshStandardMaterial({ color: 0x0d1a26, roughness: 0.3, metalness: 0.7,
+    emissive: 0x1fd9ff, emissiveIntensity: 1.5 }),
+  eye: new THREE.MeshStandardMaterial({ color: 0x0a1a22, emissive: 0x7ff4ff, emissiveIntensity: 4.2 }),
+  blade: new THREE.MeshStandardMaterial({ color: 0xbfeaff, roughness: 0.18, metalness: 0.95,
+    envMapIntensity: 1.4, emissive: 0x59e2ff, emissiveIntensity: 1.35 }),
+  hilt: new THREE.MeshStandardMaterial({ color: 0x2a2f45, roughness: 0.4, metalness: 0.85 }),
+};
+function mesh(geo, mat) { const m = new THREE.Mesh(geo, mat); m.castShadow = true; m.receiveShadow = true; return m; }
+
+/* torso, hips, head */
+const torso = mesh(new THREE.CylinderGeometry(0.3, 0.23, 0.62, 7), MAT.body);
+torso.position.y = 1.24;
+const hips = mesh(new THREE.CylinderGeometry(0.24, 0.2, 0.26, 6), MAT.body);
+hips.position.y = 0.92;
+const chest = mesh(new THREE.IcosahedronGeometry(0.2, 0), MAT.trim);
+chest.position.set(0, 1.4, -0.13); chest.scale.set(1.5, 0.9, 0.5);
+const neck = mesh(new THREE.CylinderGeometry(0.07, 0.08, 0.12, 6), MAT.body);
+neck.position.y = 1.6;
+const head = mesh(new THREE.IcosahedronGeometry(0.165, 0), MAT.body);
+head.position.y = 1.75;
+const eyeGeo = new THREE.BoxGeometry(0.055, 0.028, 0.02);
+const eyeL = mesh(eyeGeo, MAT.eye), eyeR = mesh(eyeGeo, MAT.eye);
+eyeL.position.set(-0.07, 1.78, -0.15); eyeR.position.set(0.07, 1.78, -0.15);
+P.group.add(torso, hips, chest, neck, head, eyeL, eyeR);
+
+/* legs, with a knee so the stance can shift */
+function leg(side) {
+  const g = new THREE.Group();
+  const thigh = mesh(new THREE.CylinderGeometry(0.11, 0.09, 0.46, 5), MAT.body);
+  thigh.position.y = -0.23;
+  const shin = mesh(new THREE.CylinderGeometry(0.09, 0.07, 0.44, 5), MAT.body);
+  shin.position.y = -0.68;
+  const foot = mesh(new THREE.BoxGeometry(0.17, 0.09, 0.3), MAT.trim);
+  foot.position.set(0, -0.9, -0.06);
+  g.add(thigh, shin, foot);
+  g.position.set(0.13 * side, 0.9, 0);
+  P.group.add(g);
+  return g;
+}
+const legL = leg(-1), legR = leg(1);
+
+/* arms: pivots at the shoulders, so a swing is one rotation */
+function arm(side) {
+  const g = new THREE.Group();
+  const p = mesh(new THREE.IcosahedronGeometry(0.15, 0), MAT.trim);
+  p.scale.set(1.2, 0.9, 1.2);
+  const upper = mesh(new THREE.CylinderGeometry(0.075, 0.065, 0.34, 5), MAT.body);
+  upper.position.y = -0.2;
+  const fore = mesh(new THREE.CylinderGeometry(0.065, 0.055, 0.32, 5), MAT.body);
+  fore.position.y = -0.52;
+  const hand = mesh(new THREE.IcosahedronGeometry(0.075, 0), MAT.trim);
+  hand.position.y = -0.72;
+  g.add(p, upper, fore, hand);
+  g.position.set(0.3 * side, 1.46, 0);
+  g.rotation.z = -0.14 * side;
+  P.group.add(g);
+  return { g, hand };
+}
+const armL = arm(-1), armR = arm(1);
+
+/* the sword: a long tapered blade, a guard, and two empty markers the ribbon
+   trail reads its world positions from */
+const sword = new THREE.Group();
+const hilt = mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.22, 6), MAT.hilt);
+hilt.position.y = 0.08;
+const guard = mesh(new THREE.BoxGeometry(0.22, 0.05, 0.07), MAT.trim);
+guard.position.y = 0.2;
+const blade = mesh(new THREE.BoxGeometry(0.07, 1.15, 0.025), MAT.blade);
+blade.position.y = 0.79;
+const tipCone = mesh(new THREE.ConeGeometry(0.046, 0.22, 4), MAT.blade);
+tipCone.position.y = 1.47;
+tipCone.rotation.y = Math.PI / 4;
+sword.add(hilt, guard, blade, tipCone);
+const bladeGlow = new THREE.PointLight(0x5fe6ff, 4.5, 3.6, 2);
+bladeGlow.position.y = 0.8;
+sword.add(bladeGlow);
+sword.position.set(0, -0.72, 0.02);          // gripped in the hand
+sword.rotation.x = -0.35;
+const swordTip = new THREE.Object3D(); swordTip.position.y = 1.58;
+const swordBase = new THREE.Object3D(); swordBase.position.y = 0.22;
+sword.add(swordTip, swordBase);
+armR.hand.add(sword);
+
+/* aura: a soft shell + a ground ring, both driven by attack energy */
+const auraMat = new THREE.MeshBasicMaterial({ color: 0x3fd8ff, transparent: true, opacity: 0.03,
+  blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.BackSide });
+const aura = new THREE.Mesh(new THREE.IcosahedronGeometry(1.05, 1), auraMat);
+aura.position.y = 0.95;
+aura.scale.set(0.85, 1.25, 0.85);
+P.group.add(aura);
+const auraRing = new THREE.Mesh(new THREE.RingGeometry(0.5, 0.72, 32),
+  new THREE.MeshBasicMaterial({ color: 0x7ef0ff, transparent: true, opacity: 0.35,
+    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
+auraRing.rotation.x = -Math.PI / 2;
+auraRing.position.y = 0.04;
+P.group.add(auraRing);
+
+/* ================================ the cape ================================ */
+/* A verlet cloth grid pinned along the shoulders. Not a simulation of fabric
+   — it is a 5x8 lattice with distance constraints, which is exactly enough to
+   lag behind a dodge and settle on its own. Everything runs in player-local
+   space, so the player can turn on the spot without the cape noticing. */
+const CW = 5, CH = 8;                       // vertices
+const CAPE_W = 0.66, CAPE_H = 1.24;         // narrow enough that he still reads as a person
+const capeGeo = new THREE.PlaneGeometry(CAPE_W, CAPE_H, CW - 1, CH - 1);
+const capeCur = new Float32Array(CW * CH * 3), capePrev = new Float32Array(CW * CH * 3);
+const capeRest = new Float32Array(CW * CH * 3);
+const rH = CAPE_W / (CW - 1), rV = CAPE_H / (CH - 1);
+const capeLinks = [];
+for (let iy = 0; iy < CH; iy++) for (let ix = 0; ix < CW; ix++) {
+  const i = iy * CW + ix, i3 = i * 3;
+  /* rest pose: a shallow curve, so the cloth already hangs the right way */
+  capeRest[i3] = -CAPE_W / 2 + ix * rH;
+  capeRest[i3 + 1] = 1.44 - iy * rV;
+  capeRest[i3 + 2] = 0.19 + Math.abs(ix / (CW - 1) - 0.5) * 0.1 + iy * 0.012;
+  capeCur.set(capeRest.subarray(i3, i3 + 3), i3);
+  capePrev.set(capeRest.subarray(i3, i3 + 3), i3);
+  if (ix < CW - 1) capeLinks.push([i, i + 1, rH, 1]);
+  if (iy < CH - 1) capeLinks.push([i, i + CW, rV, 1]);
+  if (ix < CW - 1 && iy < CH - 1) {
+    const d = Math.hypot(rH, rV);
+    capeLinks.push([i, i + CW + 1, d, 0.4]);   // shear, to stop the lattice
+    capeLinks.push([i + 1, i + CW, d, 0.4]);   // collapsing into a rhombus
+  }
+}
+/* A navy-to-cyan gradient baked into vertex colours: the hem catches the light
+   and blooms, which is what sells the cloth as magic rather than laundry. */
+const capeCol = new Float32Array(CW * CH * 3);
+for (let iy = 0; iy < CH; iy++) for (let ix = 0; ix < CW; ix++) {
+  const i = (iy * CW + ix) * 3, t = iy / (CH - 1);
+  capeCol[i] = 0.04 + t * 0.16; capeCol[i + 1] = 0.07 + t * 0.32; capeCol[i + 2] = 0.22 + t * 0.36;
+}
+capeGeo.setAttribute('color', new THREE.BufferAttribute(capeCol, 3));
+const cape = new THREE.Mesh(capeGeo, new THREE.MeshStandardMaterial({
+  vertexColors: true, side: THREE.DoubleSide, roughness: 0.62, metalness: 0.25,
+  emissive: 0x0d2a6a, emissiveIntensity: 0.45, envMapIntensity: 0.7 }));
+cape.castShadow = true;
+cape.frustumCulled = false;
+P.group.add(cape);
+
+const _q = new THREE.Quaternion(), _vl = new THREE.Vector3();
+function capeUpdate(dt, t) {
+  const h = Math.min(dt, 1 / 45), h2 = h * h;
+  /* The player's own velocity, expressed in local space: the cloth feels it as
+     a wind blowing the other way. This is the whole "physics" in one line. */
+  _q.copy(P.group.quaternion).invert();
+  _vl.copy(P.vworld).applyQuaternion(_q);
+  for (let i = 0; i < CW * CH; i++) {
+    const i3 = i * 3;
+    if (i < CW) {                                   // shoulder row is pinned
+      capeCur.set(capeRest.subarray(i3, i3 + 3), i3);
+      capePrev.set(capeRest.subarray(i3, i3 + 3), i3);
+      continue;
+    }
+    for (let c = 0; c < 3; c++) {
+      const cur = capeCur[i3 + c], prev = capePrev[i3 + c];
+      let a = -_vl.getComponent(c) * 2.1;
+      if (c === 1) a -= 11.5;                                    // gravity
+      else if (c === 2) a += 1.1 + Math.sin(t * 1.4 + i * 0.4) * 0.3;  // breeze, plus a shiver
+      capePrev[i3 + c] = cur;
+      capeCur[i3 + c] = cur + (cur - prev) * 0.985 + a * h2;
+    }
+  }
+  for (let it = 0; it < 3; it++) {
+    for (let k = 0; k < capeLinks.length; k++) {
+      const [a, b, rest, stiff] = capeLinks[k];
+      const a3 = a * 3, b3 = b * 3;
+      const dx = capeCur[b3] - capeCur[a3], dy = capeCur[b3 + 1] - capeCur[a3 + 1],
+        dz = capeCur[b3 + 2] - capeCur[a3 + 2];
+      const d = Math.hypot(dx, dy, dz) || 1e-6;
+      const f = ((d - rest) / d) * 0.5 * stiff;
+      if (a >= CW) { capeCur[a3] += dx * f; capeCur[a3 + 1] += dy * f; capeCur[a3 + 2] += dz * f; }
+      if (b >= CW) { capeCur[b3] -= dx * f; capeCur[b3 + 1] -= dy * f; capeCur[b3 + 2] -= dz * f; }
+    }
+    for (let i = CW; i < CW * CH; i++) {
+      const i3 = i * 3;
+      if (capeCur[i3 + 2] < 0.045) capeCur[i3 + 2] = 0.045;   // it never cuts through his back
+      if (capeCur[i3 + 1] < 0.06) capeCur[i3 + 1] = 0.06;     // nor sweeps the floor
+    }
+  }
+  const pos = capeGeo.attributes.position;
+  pos.array.set(capeCur);
+  pos.needsUpdate = true;
+  capeGeo.computeVertexNormals();
+}
+
+/* ============================ weapon ribbon =============================== */
+/* The classic sword trail, made by threading a strip through the last few
+   samples of the blade instead of spawning any geometry. Samples are taken in
+   world space and aged out, so the ribbon keeps the arc the blade actually
+   drew through the air. */
+const RIB_N = 16, RIB_LIFE = 0.22;
+const ribPos = new Float32Array(RIB_N * 2 * 3), ribCol = new Float32Array(RIB_N * 2 * 3);
+const ribGeo = new THREE.BufferGeometry();
+ribGeo.setAttribute('position', new THREE.BufferAttribute(ribPos, 3).setUsage(dyn));
+ribGeo.setAttribute('color', new THREE.BufferAttribute(ribCol, 3).setUsage(dyn));
+const ribIdx = [];
+for (let i = 0; i < RIB_N - 1; i++) { const a = i * 2; ribIdx.push(a, a + 1, a + 3, a, a + 3, a + 2); }
+ribGeo.setIndex(ribIdx);
+ribGeo.setDrawRange(0, 0);
+const ribbon = new THREE.Mesh(ribGeo, new THREE.MeshBasicMaterial({ vertexColors: true,
+  transparent: true, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, depthWrite: false }));
+ribbon.frustumCulled = false;
+scene.add(ribbon);
+const ribPts = [];
+const ribA = new THREE.Vector3(), ribB = new THREE.Vector3();
+let ribTint = new THREE.Color(0x9ff0ff);
+
+function ribbonUpdate(dt, from, to, tint) {
+  if (tint) ribTint.copy(tint);
+  if (from && to) {
+    /* Only accept a sample once the tip has moved: otherwise the strip
+       collapses into a dot when the blade hangs still. */
+    const last = ribPts[0];
+    if (!last || last.a.distanceToSquared(from) > 3e-4) {
+      ribPts.unshift({ a: from.clone(), b: to.clone(), age: 0 });
+      if (ribPts.length > RIB_N) ribPts.length = RIB_N;
+    }
+  }
+  for (const p of ribPts) p.age += dt;
+  while (ribPts.length && ribPts[ribPts.length - 1].age > RIB_LIFE) ribPts.pop();
+  const n = ribPts.length;
+  if (n < 2) { ribGeo.setDrawRange(0, 0); return; }
+  for (let i = 0; i < n; i++) {
+    const p = ribPts[i], i6 = i * 6;
+    ribPos[i6] = p.a.x; ribPos[i6 + 1] = p.a.y; ribPos[i6 + 2] = p.a.z;
+    ribPos[i6 + 3] = p.b.x; ribPos[i6 + 4] = p.b.y; ribPos[i6 + 5] = p.b.z;
+    const f = Math.max(0, 1 - p.age / RIB_LIFE) ** 1.7;
+    ribCol[i6] = ribTint.r * f; ribCol[i6 + 1] = ribTint.g * f; ribCol[i6 + 2] = ribTint.b * f;
+    ribCol[i6 + 3] = ribCol[i6] * 0.55; ribCol[i6 + 4] = ribCol[i6 + 1] * 0.55; ribCol[i6 + 5] = ribCol[i6 + 2] * 0.55;
+  }
+  ribGeo.attributes.position.needsUpdate = true;
+  ribGeo.attributes.color.needsUpdate = true;
+  ribGeo.setDrawRange(0, (n - 1) * 6);
+}
+
+/* ================================ the boss ================================ */
+/* Both bosses are assembled from the same handful of parts and exposed through
+   the same names (armL/armR/head/torso, plus cores and orbiters), so every
+   animation and the whole attack state machine is written once. */
+const B = {
+  group: new THREE.Group(), def: null, plan: null, st: null, hp: 0, maxHp: 0,
+  parts: {}, dead: true, t: 0, hitFlash: 0,
+  flames: [], shards: [], core: null, eyes: null,
+};
+scene.add(B.group);
+const BX = 0, BZ = CFG.bz, BS = 1.16;      // BS: big enough to loom over him
+
+/* Limbs hang *outside* the torso silhouette — arms hidden inside a chest read
+   as a shapeless blob no matter how good the lighting is. */
+function bossLimb(side, y, w, skin, hot) {
+  const g = new THREE.Group();
+  const upper = mesh(new THREE.CylinderGeometry(w, w * 0.78, 0.92, 6), skin);
+  upper.position.y = -0.46;
+  const fore = mesh(new THREE.CylinderGeometry(w * 0.78, w * 0.6, 0.92, 6), skin);
+  fore.position.y = -1.36;
+  const hand = mesh(new THREE.IcosahedronGeometry(w * 1.05, 0), hot);
+  hand.position.y = -1.88;
+  g.add(upper, fore, hand);
+  g.position.set(side * 1.26, y, 0.12);
+  g.rotation.set(-0.1, 0, -0.26 * side);
+  B.group.add(g);
+  return { g, hand };
+}
+function bossLeg(side, skin, hot) {
+  const thigh = mesh(new THREE.CylinderGeometry(0.34, 0.27, 0.95, 6), skin);
+  thigh.position.set(side * 0.54, 0.78, 0);
+  const hoof = mesh(new THREE.ConeGeometry(0.4, 0.56, 5), hot);
+  hoof.position.set(side * 0.54, 0.24, 0.07);
+  hoof.rotation.x = 0.18;
+  B.group.add(thigh, hoof);
+}
+/* A fan of spikes pointing out and up off a shoulder joint, not a scatter of
+   cones floating in the air beside the body. */
+function spikes(n, r, h, mat, x, y, z, spread) {
+  const out = x < 0 ? -1 : 1;
+  for (let i = 0; i < n; i++) {
+    const a = (i / (n - 1 || 1) - 0.5) * spread;
+    const s = mesh(new THREE.ConeGeometry(r, h, 5), mat);
+    s.position.set(x + out * Math.abs(a) * 0.14, y + a * 0.16, z);
+    s.rotation.set(-0.3 + a * 0.6, 0, out * (0.8 - Math.abs(a) * 0.5));
+    B.group.add(s);
+  }
+}
+
+function buildDemon() {
+  /* A dark crust with hot light inside it: if the whole body glows, the
+     silhouette dissolves into an orange blob and stops being scary. */
+  const skin = new THREE.MeshStandardMaterial({ color: 0x1b0805, emissive: 0x8f2000,
+    emissiveIntensity: 0.32, roughness: 0.62, metalness: 0.35, flatShading: true });
+  const hot = new THREE.MeshStandardMaterial({ color: 0x1d0703, emissive: 0xff8c1e,
+    emissiveIntensity: 1.8, roughness: 0.5, metalness: 0.2, flatShading: true });
+  const eyeM = new THREE.MeshStandardMaterial({ color: 0x2a0000, emissive: 0xff2a00, emissiveIntensity: 6 });
+  const flameM = new THREE.MeshBasicMaterial({ color: 0xff6a12, transparent: true, opacity: 0.13,
+    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+
+  bossLeg(-1, skin, hot); bossLeg(1, skin, hot);
+  const torso = mesh(new THREE.IcosahedronGeometry(0.95, 1), skin);
+  torso.position.y = 2.0; torso.scale.set(0.94, 1.12, 0.88);
+  const ribs = mesh(new THREE.IcosahedronGeometry(0.4, 0), hot);
+  ribs.position.set(0, 2.0, 0.72); ribs.scale.set(0.95, 1.05, 0.3);
+  B.group.add(torso, ribs);
+
+  /* Three slim shells read as fire licking off the body; at this opacity they
+     hug the silhouette instead of stacking into one white-hot ball. */
+  for (let i = 0; i < 3; i++) {
+    const f = new THREE.Mesh(new THREE.IcosahedronGeometry(0.98, 1), flameM.clone());
+    f.position.y = 2.0;
+    f.scale.set(1 + i * 0.07, 1.05 + i * 0.07, 1 + i * 0.07);
+    f.rotation.set(i, i * 2, i * 3);
+    B.group.add(f);
+    B.flames.push({ m: f, seed: i * 2.1 });
+  }
+  const head = mesh(new THREE.IcosahedronGeometry(0.52, 0), skin);
+  head.position.y = 3.05; head.scale.set(1, 0.95, 0.92);
+  const jaw = mesh(new THREE.ConeGeometry(0.3, 0.42, 5), hot);
+  jaw.position.set(0, 2.82, 0.3); jaw.rotation.x = 1.5;
+  B.eyes = new THREE.Group();
+  const eyeGeo = new THREE.SphereGeometry(0.085, 8, 6);
+  for (const s of [-1, 1]) {
+    const e = mesh(eyeGeo, eyeM);
+    e.position.set(s * 0.17, 3.06, 0.33);
+    e.scale.set(1, 0.7, 0.6);
+    B.eyes.add(e);
+  }
+  const eyeLight = new THREE.PointLight(0xff3c00, 16, 7, 2);
+  eyeLight.position.set(0, 3.0, 0.5);
+  B.eyes.add(eyeLight);
+  B.group.add(head, jaw, B.eyes);
+  for (const s of [-1, 1]) {                       // horns, two segments each
+    const h1 = mesh(new THREE.ConeGeometry(0.18, 0.9, 5), hot);
+    h1.position.set(s * 0.32, 3.5, -0.04); h1.rotation.set(-0.3, 0, s * 0.8);
+    const h2 = mesh(new THREE.ConeGeometry(0.11, 0.72, 5), hot);
+    h2.position.set(s * 0.62, 3.9, -0.24); h2.rotation.set(-0.95, 0, s * 1.2);
+    B.group.add(h1, h2);
+  }
+  spikes(3, 0.17, 0.66, hot, -1.22, 2.62, 0, 1);
+  spikes(3, 0.17, 0.66, hot, 1.22, 2.62, 0, 1);
+  B.parts.armL = bossLimb(-1, 2.46, 0.22, skin, hot);
+  B.parts.armR = bossLimb(1, 2.46, 0.22, skin, hot);
+  B.parts.head = head; B.parts.torso = torso;
+  B.core = ribs;
+  B.parts.claw = hot;
+  B.flameM = flameM;
+}
+
+function buildIce() {
+  const skin = new THREE.MeshStandardMaterial({ color: 0x0d3252, emissive: 0x1a63ff,
+    emissiveIntensity: 0.34, roughness: 0.13, metalness: 0.45, flatShading: true, envMapIntensity: 1.35 });
+  const glass = new THREE.MeshStandardMaterial({ color: 0x123c60, emissive: 0x59d2ff,
+    emissiveIntensity: 0.7, roughness: 0.05, metalness: 0.5, flatShading: true,
+    envMapIntensity: 1.7, transparent: true, opacity: 0.93 });
+  const eyeM = new THREE.MeshStandardMaterial({ color: 0x0a2233, emissive: 0x9fe8ff, emissiveIntensity: 3.4 });
+
+  bossLeg(-1, skin, glass); bossLeg(1, skin, glass);
+  const torso = mesh(new THREE.OctahedronGeometry(1.06, 0), skin);
+  torso.position.y = 2.0; torso.scale.set(0.92, 1.28, 0.88);
+  const shoulders = mesh(new THREE.OctahedronGeometry(0.62, 0), glass);
+  shoulders.position.y = 2.62; shoulders.scale.set(1.7, 0.6, 0.85);
+  B.group.add(torso, shoulders);
+
+  /* The core: a bright seed inside a cage of ice, so the light reads as
+     something burning *behind* the crystal rather than a lamp on its face. */
+  const core = mesh(new THREE.IcosahedronGeometry(0.3, 1),
+    new THREE.MeshStandardMaterial({ color: 0xbfefff, emissive: 0x9fe8ff, emissiveIntensity: 5.5 }));
+  core.position.set(0, 2.08, 0.12);
+  const coreLight = new THREE.PointLight(0x7fd8ff, 30, 12, 2);
+  coreLight.position.set(0, 2.1, 0.4);
+  B.group.add(core, coreLight);
+
+  /* Eight shards in slow orbit. They are the boss's silhouette in motion. */
+  for (let i = 0; i < 8; i++) {
+    const s = mesh(new THREE.OctahedronGeometry(0.13 + Math.random() * 0.1, 0), glass);
+    B.group.add(s);
+    B.shards.push({ m: s, a: (i / 8) * Math.PI * 2, r: 1.45 + (i % 3) * 0.28,
+      y: 0.4 + (i % 4) * 0.62, sp: 0.25 + (i % 3) * 0.12 });
+  }
+  const head = mesh(new THREE.OctahedronGeometry(0.46, 0), skin);
+  head.position.y = 3.02; head.scale.set(0.95, 1.1, 0.95);
+  B.eyes = new THREE.Group();
+  const visor = mesh(new THREE.BoxGeometry(0.52, 0.09, 0.06), eyeM);
+  visor.position.set(0, 3.05, 0.4);
+  B.eyes.add(visor);
+  const eyeLight = new THREE.PointLight(0x8fe4ff, 14, 7, 2);
+  eyeLight.position.set(0, 3.0, 0.6);
+  B.eyes.add(eyeLight);
+  B.group.add(head, B.eyes);
+  for (let i = 0; i < 5; i++) {                    // crest, fanning back
+    const c = mesh(new THREE.ConeGeometry(0.11, 0.86 - i * 0.08, 5), glass);
+    const a = (i - 2) * 0.32;
+    c.position.set(a * 0.55, 3.46, -0.18);
+    c.rotation.set(-0.5, 0, a);
+    B.group.add(c);
+  }
+  spikes(3, 0.2, 0.76, glass, -1.22, 2.66, 0, 1);
+  spikes(3, 0.2, 0.76, glass, 1.22, 2.66, 0, 1);
+  B.parts.armL = bossLimb(-1, 2.46, 0.24, skin, glass);
+  B.parts.armR = bossLimb(1, 2.46, 0.24, skin, glass);
+  B.parts.head = head; B.parts.torso = torso;
+  B.core = core;
+  B.parts.claw = glass;
+}
+
+/* ---- assemble / tear down ------------------------------------------------- */
+function clearBoss() {
+  B.group.traverse((o) => {
+    if (o.isMesh) { o.geometry.dispose(); if (o.material && o.material !== MAT.body) o.material.dispose(); }
+  });
+  B.group.clear();
+  B.flames = []; B.shards = []; B.parts = {}; B.eyes = null; B.core = null;
+}
+function spawnBoss(plan) {
+  clearBoss();
+  B.def = plan.def; B.plan = plan; B.hp = plan.hp; B.maxHp = plan.hp;
+  B.st = LOGIC.bossInit(plan, RNG);
+  B.dead = false; B.t = 0; B.hitFlash = 0;
+  B.group.position.set(BX, 0, BZ);
+  B.group.rotation.set(0, 0, 0);
+  B.group.scale.setScalar(0.001);
+  if (plan.def.id === 'demon') buildDemon(); else buildIce();
+  const warm = plan.def.id === 'demon' ? 0xff6a12 : 0x7fd8ff;
+  ring({ x: BX, z: BZ, color: warm, r0: 0.4, r1: 7, life: 0.85 });
+  burst({ x: BX, y: 0.4, z: BZ, count: 46, color: warm, speed: 6, spread: 1,
+    size: 0.3, life: 1.1, grav: 1.5, drag: 1.4, up: 1.2 });
+  shake(0.5); flash(0.25);
+}
+
+/* ---- the warning zone ---------------------------------------------------- */
+/* A painted half-disc: hazard hatch, a bright rim, and a pulse that tightens
+   as the strike approaches. Its job is to be impossible to misread. */
+function warnTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 512;
+  const g = c.getContext('2d');
+  const grd = g.createRadialGradient(256, 256, 30, 256, 256, 254);
+  grd.addColorStop(0.00, 'rgba(255,60,60,0.16)');
+  grd.addColorStop(0.65, 'rgba(255,30,30,0.26)');
+  grd.addColorStop(1.00, 'rgba(255,0,0,0.52)');
+  g.fillStyle = grd;
+  g.beginPath(); g.arc(256, 256, 254, 0, Math.PI * 2); g.fill();
+  g.save(); g.beginPath(); g.arc(256, 256, 254, 0, Math.PI * 2); g.clip();
+  g.strokeStyle = 'rgba(0,0,0,0.20)'; g.lineWidth = 7;       // warning stripes
+  for (let i = -512; i < 1024; i += 34) {
+    g.beginPath(); g.moveTo(i, 0); g.lineTo(i + 512, 512); g.stroke();
+  }
+  g.strokeStyle = 'rgba(255,190,190,0.26)'; g.lineWidth = 2.5;
+  for (let r = 46; r < 250; r += 46) { g.beginPath(); g.arc(256, 256, r, 0, Math.PI * 2); g.stroke(); }
+  g.restore();
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
+  return t;
+}
+const warnZone = new THREE.Group();
+const warnGeo = new THREE.CircleGeometry(R, 56, 0, Math.PI);   // local +x half
+const warnMat = new THREE.MeshBasicMaterial({ map: warnTexture(), transparent: true,
+  opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+const warnDisc = new THREE.Mesh(warnGeo, warnMat);
+warnDisc.rotation.x = -Math.PI / 2;
+warnDisc.position.y = 0.03;
+const warnRim = new THREE.Mesh(new THREE.TorusGeometry(R * 0.995, 0.075, 5, 40, Math.PI),
+  new THREE.MeshBasicMaterial({ color: 0xff5544, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }));
+warnRim.rotation.x = -Math.PI / 2;
+warnRim.position.y = 0.05;
+warnZone.add(warnDisc, warnRim);
+warnZone.visible = false;
+world.add(warnZone);
+
+function warnShow(side) {
+  warnZone.rotation.y = side === 'right' ? 0 : Math.PI;
+  warnZone.visible = true;
+  warnZone.scale.setScalar(0.55);
+  ring({ x: 0, z: 0, color: 0xff3322, r0: 0.5, r1: R + 1, life: 0.7 });
+}
+
+/* ---- ice shards: a small pool of crystal spikes that erupt and sink ------- */
+const shardGeo = new THREE.OctahedronGeometry(0.26, 0);
+const shardPal = [];
+for (let i = 0; i < 16; i++) {
+  const m = new THREE.Mesh(shardGeo, new THREE.MeshStandardMaterial({ color: 0x9fe8ff,
+    emissive: 0x59d2ff, emissiveIntensity: 1.3, roughness: 0.1, metalness: 0.4, flatShading: true }));
+  m.visible = false;
+  world.add(m);
+  shardPal.push({ m, t: 1, life: 1, x: 0, z: 0, h: 2, sp: 0 });
+}
+function shardsAt(x, z, n, color) {
+  for (let k = 0; k < n; k++) {
+    let s = shardPal.find((p) => p.t >= 1);
+    if (!s) s = shardPal[k % shardPal.length];
+    s.t = 0; s.life = 0.9 + Math.random() * 0.5;
+    s.x = x + (Math.random() - 0.5) * 2.4;
+    s.z = z + (Math.random() - 0.5) * 2.4;
+    s.h = 2.2 + Math.random() * 2.6;
+    s.sp = 1.4 + Math.random() * 3.4;
+    s.m.material.color.set(color);
+    s.m.material.emissive.set(color);
+    s.m.visible = true;
+  }
+}
+function updateShards(dt) {
+  for (const s of shardPal) {
+    if (s.t >= 1) { if (s.m.visible) s.m.visible = false; continue; }
+    s.t = Math.min(1, s.t + dt / s.life);
+    const up = Math.sin(s.t * Math.PI * 0.55);
+    s.m.position.set(s.x, up * s.h, s.z);
+    s.m.rotation.set(s.t * s.sp, s.t * s.sp * 1.6, s.t * 0.5);
+    s.m.scale.setScalar(0.5 + up * 1.1);
+  }
+}
+
+/* ---- the strike itself --------------------------------------------------- */
+/* Everything the boss does on the turn is telegraphed, aimed, and loud. */
+function bossStrikeFx(side, isIce) {
+  const dir = side === 'right' ? 0 : Math.PI;
+  const col = isIce ? 0x7fe0ff : 0xff6a12;
+  const x = side === 'right' ? 2.6 : -2.6;
+  arc({ x: BX, y: isIce ? 1.0 : 1.35, z: BZ + 1.4, yaw: dir, r0: 1.4, r1: 6.4, life: 0.42, flat: 1, color: col });
+  arc({ x: BX, y: isIce ? 1.9 : 2.2, z: BZ + 1.4, yaw: dir, r0: 1.0, r1: 4.6, life: 0.34, flat: 0.72, color: isIce ? 0xd6f6ff : 0xffd166 });
+  ring({ x: BX * 0.3, z: BZ + 1.6, color: col, r0: 0.6, r1: R + 0.6, life: 0.6 });
+  burst({ x: x * 0.75, y: 1.0, z: BZ + 1.6, count: 70, color: col, speed: 11, spread: 1,
+    size: isIce ? 0.2 : 0.34, life: 0.85, grav: isIce ? -8 : 3.5, drag: 1.5, up: isIce ? 0 : 0.7 });
+  if (isIce) shardsAt(BX + x * 0.55, BZ + 1.8, 7, 0x9fe8ff);
+  else {
+    burst({ x: x * 0.75, y: 0.2, z: BZ + 1.6, count: 40, color: 0xff9a2e, speed: 7, spread: 1,
+      size: 0.4, life: 0.6, grav: -1, drag: 1.2, up: 1.6 });
+    shardPal.length && shardsAt(BX + x * 0.55, BZ + 1.8, 4, 0xff7a1e);
+  }
+  flash(isIce ? 0.1 : 0.14);
+  shake(isIce ? 0.7 : 0.85);
+  hitStop(0.05);
+}
+
+/* ---- the boss's frame ---------------------------------------------------- */
+/* One function drives both bosses: it advances the pure state machine, reacts
+   to the events it emits, and animates the same part names regardless of which
+   body is currently standing there. */
+function bossAmbient(dt) {
+  const demon = B.def.id === 'demon';
+  const r = () => Math.random();
+  if (demon) {
+    burst({ x: BX + (r() - 0.5) * 1.6, y: 1.2 + r() * 1.8, z: BZ + (r() - 0.5) * 1.2,
+      count: 2, color: r() < 0.5 ? 0xff5a12 : 0xffc247, speed: 1.6, spread: 0.5,
+      size: 0.2, life: 0.7, grav: 2.4, drag: 1.1, up: 1 });
+  } else {
+    burst({ x: BX + (r() - 0.5) * 2.4, y: 0.15 + r() * 0.4, z: BZ + (r() - 0.5) * 2.4,
+      count: 1, color: 0x9fe8ff, speed: 0.7, spread: 0.6, size: 0.18, life: 1.5,
+      grav: 0.35, drag: 1.9 });
+  }
+}
+
+function updateBoss(dt) {
+  if (B.dead) {                                   // the corpse implodes and spins out
+    const s = B.group.scale.x;
+    if (s > 0.02) {
+      B.group.scale.setScalar(s * Math.max(0, 1 - dt * 3.4));
+      B.group.rotation.y += dt * 7;
+      B.group.rotation.x = LOGIC.damp(B.group.rotation.x, 0, 6, dt);
+    }
+    return;
+  }
+  B.t += dt;
+  B.group.scale.setScalar(LOGIC.damp(B.group.scale.x, BS, 7, dt));   // spawn pop-in
+  B.hitFlash = Math.max(0, B.hitFlash - dt * 4);
+  const e = B.st;
+
+  for (const ev of LOGIC.bossStep(e, dt)) {
+    if (ev.type === 'telegraph') { warnShow(ev.side); shake(0.05); }
+    else if (ev.type === 'strike') {
+      warnZone.visible = false;
+      bossStrikeFx(ev.side, B.def.id === 'ice');
+      /* The whole game, right here: safe means the other half. */
+      if (!LOGIC.isSafe(ev.side, P.side)) hurtPlayer(B.plan.dmg);
+      else after(0.05, () => { if (!B.dead) dmgNumber({ x: 0, y: 2.6, z: CFG.pz, value: 'DODGE',
+        life: 0.7, magic: true }); });
+    } else if (ev.type === 'recover') warnZone.visible = false;
+  }
+
+  /* warning zone: charges up, and throws sparks while it does */
+  if (e.phase === 'telegraph') {
+    const u = LOGIC.telegraphT(e);
+    warnMat.opacity = 0.16 + u * 0.3;
+    warnRim.material.opacity = 0.25 + u * 0.5;
+    warnZone.scale.setScalar(LOGIC.lerp(0.5, 1, Math.min(1, u * 2.4)));
+    if (Math.random() < 0.55) {
+      const sx = (e.side === 'right' ? 1 : -1) * (1 + Math.random() * 7);
+      const sz = (Math.random() - 0.5) * 16;
+      burst({ x: sx, y: 0.1, z: sz, count: 1, color: B.def.id === 'ice' ? 0x9fe8ff : 0xff6a3a,
+        speed: 2.2, spread: 0.3, size: 0.16, life: 0.6, grav: 1.6, drag: 1.6, up: 1 });
+    }
+  }
+
+  /* pose: wind up over the armed side, slam forward on the strike */
+  /* Signs are mirrored from the player's: this body faces +z, so raising an
+     arm up and behind it is a positive rotation about X. */
+  let arm = 0;
+  if (e.phase === 'telegraph') arm = 2.35 * Math.min(1, LOGIC.telegraphT(e) * 1.7);
+  else if (e.phase === 'strike') arm = -1.25;
+  const g = e.side === 'left' ? B.parts.armL.g : B.parts.armR.g;
+  const other = e.side === 'left' ? B.parts.armR.g : B.parts.armL.g;
+  g.rotation.x = LOGIC.damp(g.rotation.x, arm, 15, dt);
+  other.rotation.x = LOGIC.damp(other.rotation.x, arm * 0.25, 10, dt);
+  const lean = e.phase === 'strike' ? 0.17 : (e.phase === 'telegraph' ? -0.09 : 0);
+  B.group.rotation.x = LOGIC.damp(B.group.rotation.x, lean, 9, dt);
+  /* A hit makes it flinch; a breather makes it breathe. */
+  const breathe = Math.sin(B.t * 1.5) * 0.5 + 0.5;
+  const base = B.def.id === 'demon' ? [0.94, 1.12, 0.88] : [0.92, 1.28, 0.88];
+  B.parts.torso.scale.set(base[0] + breathe * 0.03, base[1] + breathe * 0.04, base[2] - breathe * 0.02);
+  B.parts.head.rotation.x = Math.sin(B.t * 1.1) * 0.06 - B.group.rotation.x * 0.5;
+  B.group.rotation.z = Math.sin(B.t * 42) * 0.022 * B.hitFlash;
+
+  if (B.def.id === 'demon') {
+    for (const f of B.flames) {
+      const w = 0.16 + 0.09 * Math.sin(B.t * 5 + f.seed) + 0.05 * Math.sin(B.t * 11.3 + f.seed * 3);
+      f.m.material.opacity = Math.max(0.04, w);
+      f.m.scale.setScalar(1 + f.seed * 0.02 + Math.sin(B.t * 3.4 + f.seed) * 0.07);
+      f.m.rotation.y += dt * 0.4;
+    }
+    if (B.core) B.core.material.emissiveIntensity = 1.5 + Math.sin(B.t * 4.2) * 0.5;
+  } else {
+    for (const s of B.shards) {
+      s.a += dt * s.sp;
+      s.m.position.set(Math.cos(s.a) * s.r, s.y + Math.sin(B.t * 1.4 + s.a) * 0.16, Math.sin(s.a) * s.r);
+      s.m.rotation.set(s.a, s.a * 2, 0);
+    }
+    if (B.core) {
+      B.core.rotation.y += dt * 0.8;
+      B.core.material.emissiveIntensity = 5 + Math.sin(B.t * 2.6) * 1.6;
+      B.core.scale.setScalar(1 + Math.sin(B.t * 2.6) * 0.06);
+    }
+  }
+  bossAmbient(dt);
+}
+
+/* ============================== the fight ================================= */
+const G = {
+  state: 'fight',           // fight | victory | defeat
+  t: 0, combo: 0, lastHit: -99, best: 0, slain: 0,
+  hits: 0, dodges: 0, runT: 0,
+};
+const bannerEl = document.getElementById('banner');
+const overEl = document.getElementById('over');
+function banner(title, sub, cls, dur) {
+  bannerEl.querySelector('b').textContent = title;
+  bannerEl.querySelector('i').textContent = sub || '';
+  bannerEl.className = cls + ' on';
+  clearTimeout(bannerEl._t);
+  bannerEl._t = setTimeout(() => { bannerEl.className = cls; }, dur || 1500);
+}
+
+/* A new boss walks in: never the same one twice, always meaner than the last. */
+function nextWave() {
+  const def = LOGIC.rollBoss(RNG, B.def ? B.def.id : null);
+  const plan = LOGIC.planFor(def, G.slain);
+  spawnBoss(plan);
+  G.state = 'fight';
+  G.combo = 0;
+  G.lastHit = -99;
+  hudBoss(plan);
+  hudCombo(0);
+  banner(def.name, def.title + ' — WAVE ' + (G.slain + 1), 'wave', 1900);
+}
+
+/* ---- dealing it out ------------------------------------------------------ */
+function damageBoss(move, pos, tint) {
+  if (B.dead || G.state !== 'fight') return;
+  const r = LOGIC.hitFor(move, G.combo, RNG);
+  G.combo = LOGIC.comboAfterHit(G.combo, G.t, G.lastHit);
+  G.lastHit = G.t;
+  if (G.combo > G.best) G.best = G.combo;
+  B.hp = Math.max(0, B.hp - r.amount);
+  B.hitFlash = Math.min(1, B.hitFlash + (r.crit ? 0.9 : 0.45));
+  G.hits++;
+  hitSpark(pos, tint || 0x9ff0ff, r.crit || move === 'heavy');
+  dmgNumber({ x: pos.x, y: pos.y + 0.35, z: pos.z, value: r.amount, crit: r.crit, magic: move === 'bolt' });
+  hudCombo(G.combo);
+  hudBossHit();
+  if (r.crit || move === 'heavy') {
+    shake(move === 'heavy' ? 0.8 : 0.5);
+    slowmo(0.34, move === 'heavy' ? 0.34 : 0.22);   // the beat that sells a big hit
+    flash(0.09);
+  } else shake(0.19);
+  if (B.hp <= 0) killBoss();
+}
+
+function killBoss() {
+  B.dead = true;
+  warnZone.visible = false;
+  G.state = 'victory';
+  G.slain++;
+  const isIce = B.def.id === 'ice';
+  const col = isIce ? 0x9fe8ff : 0xff7a1e;
+  burst({ x: BX, y: 2, z: BZ, count: 120, color: col, speed: 14, spread: 1, size: 0.34,
+    life: 1.3, grav: -3, drag: 1.1 });
+  burst({ x: BX, y: 2, z: BZ, count: 60, color: 0xffffff, speed: 7, spread: 1, size: 0.5,
+    life: 0.9, grav: 1.2, drag: 1.5 });
+  ring({ x: BX, z: BZ, color: col, r0: 0.5, r1: 13, life: 0.9 });
+  ring({ x: BX, z: BZ, y: 1.4, color: 0xffffff, r0: 0.4, r1: 6, life: 0.6, tilt: 0 });
+  shardsAt(BX, BZ, 12, col);
+  flash(0.34); shake(1.25); slowmo(0.22, 1.1); hitStop(0.09);
+  /* Surviving is a reprieve, not a reset: patch up, then meet the next one. */
+  const heal = Math.min(28, P.maxHp - P.hp);
+  P.hp += heal; G.healed += heal;
+  hudPlayer();
+  banner('VICTORY', B.def.name + ' FALLS' + (heal ? '  ·  +' + heal + ' HP' : ''), 'win', 1700);
+  after(2.3, nextWave);
+}
+
+function hurtPlayer(dmg) {
+  if (G.state !== 'fight') return;
+  P.hp = LOGIC.incoming(dmg, P.hp);
+  G.combo = 0;
+  G.lastHit = -99;
+  hudCombo(0);
+  hudPlayer();
+  P.hitFlash = 1;
+  vignette(0.6); shake(0.95); hitStop(0.07); flash(0.08);
+  burst({ x: P.x, y: 1.1, z: CFG.pz, count: 26, color: 0xff4a5e, speed: 7, spread: 1,
+    size: 0.22, life: 0.6, grav: -3, drag: 1.6 });
+  dmgNumber({ x: P.x, y: 2.15, z: CFG.pz + 0.4, value: dmg, hurt: true });
+  if (P.hp <= 0) defeat();
+}
+
+function defeat() {
+  G.state = 'defeat';
+  warnZone.visible = false;
+  if (!B.dead) { B.plan = { ...B.plan, recover: 3 }; B.st.phase = 'idle'; B.st.t = -3; }
+  slowmo(0.25, 1.6);
+  shake(1);
+  flash(0.3);
+  burst({ x: P.x, y: 1.2, z: CFG.pz, count: 80, color: 0xff5468, speed: 9, spread: 1,
+    size: 0.3, life: 1.4, grav: -5, drag: 1.2 });
+  overEl.querySelector('h1').textContent = 'DEFEATED';
+  overEl.querySelector('.stats').innerHTML =
+    `<div><b>${G.slain}</b>BOSSES FELLED</div><div><b>${G.hits}</b>HITS LANDED</div>` +
+    `<div><b>${G.best}</b>BEST COMBO</div><div><b>${G.runT.toFixed(1)}s</b>SURVIVED</div>`;
+  overEl.className = 'lose on';
+}
+
+/* ---- new run ------------------------------------------------------------- */
+function newRun() {
+  clearTimers();
+  overEl.className = '';
+  bannerEl.className = '';
+  G.state = 'fight'; G.combo = 0; G.lastHit = -99; G.best = 0; G.slain = 0;
+  G.hits = 0; G.runT = 0;
+  P.hp = P.maxHp; P.x = CFG.slot; P.targetX = CFG.slot; P.side = LOGIC.sideOf(P.x);
+  P.group.position.set(P.x, 0, CFG.pz);
+  P.group.rotation.set(0, 0, 0);
+  P.atk.name = null;
+  for (const k in P.readyAt) P.readyAt[k] = 0;
+  B.dead = true; clearBoss();
+  hudPlayer(); hudCombo(0);
+  nextWave();
+}
+
+/* ============================ the player's frame ========================== */
+const TINT = { quick: new THREE.Color(0x9ff0ff), heavy: new THREE.Color(0xffd166), bolt: new THREE.Color(0xc79bff) };
+const _hit = new THREE.Vector3();
+let pLunge = 0;
+
+/* A dodge commits the instant it is pressed: the side you are on is what the
+   strike tests against, so the feet are only ever catching up to a decision
+   that has already been made. */
+function tryMove(dir) {
+  if (G.state === 'defeat' || P.dodgeT < 0.1) return;
+  const nx = dir < 0 ? -CFG.slot : CFG.slot;
+  if (nx === P.targetX) return;
+  P.targetX = nx;
+  P.side = LOGIC.sideOf(nx);
+  P.dodgeT = 0;
+  G.dodges++;
+  ring({ x: P.x, z: CFG.pz, color: 0x6ff2ff, r0: 0.3, r1: 2.4, life: 0.35 });
+  burst({ x: P.x, y: 0.7, z: CFG.pz, count: 16, color: 0x6ff2ff, speed: 3.4, spread: 0.8,
+    size: 0.16, life: 0.45, grav: -0.6, drag: 2.4, dir: [dir * 1.6, 0.5, 0], up: 0.3 });
+}
+
+function tryAttack(name) {
+  if (G.state !== 'fight' || B.dead) return;
+  if (!LOGIC.isReady(G.t, P.readyAt[name])) return;
+  if (P.atk.name && P.atk.t < 0.1) return;      // no machine-gunning one key
+  const a = LOGIC.ACTIONS[name];
+  P.atk = { name, t: 0, dur: a.hit + 0.26, hit: false };
+  P.readyAt[name] = LOGIC.readyAt(G.t, a.cd);
+  P.aura = 1;
+}
+
+/* Where a swing actually lands: at the boss's near flank, in front of you. */
+function resolveHit(name) {
+  const tint = TINT[name].getHex();
+  if (name === 'bolt') {
+    P.group.updateMatrixWorld(true);
+    swordTip.getWorldPosition(ribA);
+    bolt({ from: new THREE.Vector3(ribA.x * 0.6, 1.55, ribA.z), to: new THREE.Vector3(BX, 1.9, BZ + 0.9),
+      color: tint, dur: 0.3, onHit: (p) => damageBoss('bolt', p, tint) });
+    return;
+  }
+  _hit.set(P.x * 0.3, 1.8, BZ + 1.5);
+  burst({ x: P.x, y: 1.5, z: CFG.pz - 0.7, count: 10, color: tint, speed: 4, spread: 0.7,
+    size: 0.16, life: 0.3, grav: -2, drag: 2 });
+  /* The crescent of the swing, thrown from the player toward the boss. */
+  arc({ x: P.x * 0.5, y: name === 'heavy' ? 0.95 : 1.5, z: CFG.pz - 1.1, yaw: Math.PI / 2,
+    r0: 0.9, r1: name === 'heavy' ? 6.2 : 4.2, life: name === 'heavy' ? 0.45 : 0.28,
+    flat: name === 'heavy' ? 1 : 0.5, color: tint });
+  if (name === 'heavy') {
+    ring({ x: P.x * 0.4, z: CFG.pz - 1.6, color: tint, r0: 0.5, r1: 8, life: 0.55 });
+    shardsAt(P.x * 0.5, CFG.pz - 1.7, 5, tint);
+    burst({ x: P.x * 0.4, y: 0.1, z: CFG.pz - 1.7, count: 30, color: 0xffb347, speed: 8,
+      spread: 1, size: 0.28, life: 0.7, grav: -6, drag: 1.4, up: 1.2 });
+    shake(0.4); hitStop(0.04);
+  }
+  damageBoss(name, _hit, tint);
+}
+
+function updatePlayer(dt, t) {
+  const px0 = P.x;
+  P.dodgeT += dt;
+  if (G.state !== 'defeat') {
+    /* The dash is fast, the settle is slow: that is the whole feel of a dodge. */
+    P.x = LOGIC.damp(P.x, P.targetX, P.dodgeT < 0.3 ? 24 : 11, dt);
+    if (Math.abs(P.x - P.targetX) < 0.008) P.x = P.targetX;
+  }
+  P.vworld.set(dt > 1e-5 ? (P.x - px0) / dt : 0, 0, 0);
+  P.group.position.x = P.x;
+  P.group.rotation.z = LOGIC.damp(P.group.rotation.z, -(P.targetX - P.x) * 0.14, 14, dt);
+
+  /* attack timeline: wind up, land the blow, recover */
+  let u = 0, name = null, a = null;
+  if (P.atk.name) {
+    name = P.atk.name; a = LOGIC.ACTIONS[name];
+    P.atk.t += dt;
+    u = LOGIC.clamp(P.atk.t / P.atk.dur, 0, 1);
+    if (!P.atk.hit && P.atk.t >= a.windup) { P.atk.hit = true; resolveHit(name); }
+    if (P.atk.t >= P.atk.dur) P.atk.name = null;
+  }
+
+  /* the arm does the talking */
+  const R = armR.g, wind = 0.34;
+  if (a) {
+    if (name === 'bolt') {
+      R.rotation.x = LOGIC.lerp(-0.7, 1.15, Math.min(1, u / 0.35));
+      R.rotation.z = -0.14;
+    } else {
+      const k = u < wind ? u / wind : (u - wind) / (1 - wind);
+      const s = k * k * (3 - 2 * k);                       // smoothstep the cut
+      R.rotation.x = u < wind ? LOGIC.lerp(0.2, -2.55, k) : LOGIC.lerp(-2.55, 1.35, s);
+      R.rotation.z = -0.14 - Math.sin(u * Math.PI) * (name === 'heavy' ? 0.6 : 0.4);
+    }
+    armL.g.rotation.x = Math.sin(u * Math.PI) * (name === 'heavy' ? -0.75 : -0.45);
+    legR.rotation.x = -Math.sin(u * Math.PI) * (name === 'heavy' ? 0.45 : 0.2);
+    torso.rotation.y = Math.sin(u * Math.PI) * (name === 'heavy' ? 0.34 : 0.2);
+  } else {
+    R.rotation.x = LOGIC.damp(R.rotation.x, 0.12 + Math.sin(t * 1.6) * 0.07, 8, dt);
+    R.rotation.z = LOGIC.damp(R.rotation.z, -0.14, 8, dt);
+    armL.g.rotation.x = LOGIC.damp(armL.g.rotation.x, Math.sin(t * 1.6) * 0.06, 6, dt);
+    legR.rotation.x = LOGIC.damp(legR.rotation.x, 0, 8, dt);
+    torso.rotation.y = LOGIC.damp(torso.rotation.y, Math.sin(t * 0.9) * 0.05, 6, dt);
+  }
+  /* a small lunge toward the boss, so melee has weight behind it */
+  const lungeTo = a && name !== 'bolt' ? (name === 'heavy' ? 0.6 : 0.3) * Math.sin(u * Math.PI) : 0;
+  pLunge = LOGIC.damp(pLunge, lungeTo, 13, dt);
+  P.group.position.z = CFG.pz - pLunge;
+  P.group.position.y = Math.sin(t * 2.1) * 0.014;
+  torso.scale.y = 1 + Math.sin(t * 2.1) * 0.02;
+  head.rotation.y = Math.sin(t * 0.8) * 0.1;
+
+  /* energy aura pulses with every action, and turns red when you are hit */
+  P.aura = Math.max(0, P.aura - dt * 2.6);
+  P.hitFlash = Math.max(0, P.hitFlash - dt * 2.4);
+  const pulse = P.aura + P.hitFlash * 0.7;
+  auraMat.opacity = 0.02 + pulse * 0.09;
+  auraMat.color.set(P.hitFlash > 0.25 ? 0xff4a5e : 0x3fd8ff);
+  aura.scale.set(0.85 + pulse * 0.14, 1.25 + pulse * 0.16, 0.85 + pulse * 0.14);
+  auraRing.material.opacity = 0.2 + pulse * 0.6;
+  auraRing.scale.setScalar(1 + pulse * 0.4);
+  MAT.eye.emissiveIntensity = 3.6 + Math.sin(t * 3) * 0.7 + P.aura * 2.4;
+  bladeGlow.intensity = 3.5 + P.aura * 7;
+
+  /* the blade ribbon is sampled straight off the sword's world matrix */
+  const swinging = a && name !== 'bolt' && u > 0.15;
+  if (swinging) {
+    P.group.updateMatrixWorld(true);
+    swordTip.getWorldPosition(ribA);
+    swordBase.getWorldPosition(ribB);
+    ribbonUpdate(dt, ribA, ribB, TINT[name]);
+  } else ribbonUpdate(dt, null, null, null);
+
+  capeUpdate(dt, t);
+}
+
+/* ================================= HUD =================================== */
+const el = {
+  bossName: document.getElementById('bossName'), dot: document.getElementById('bossDot'),
+  wave: document.getElementById('bossWave'), bar: document.getElementById('bossBar'),
+  bossFill: document.getElementById('bossHpFill'), bossLag: document.getElementById('bossHpLag'),
+  spark: document.getElementById('bossSpark'), pFill: document.getElementById('pHpFill'),
+  pLag: document.getElementById('pHpLag'), pPanel: document.getElementById('pPanel'),
+  pTag: document.getElementById('pTag'), combo: document.getElementById('combo'),
+  comboN: document.getElementById('comboN'),
+  slots: Array.from(document.querySelectorAll('.slot')),
+};
+function hudBoss(plan) {
+  const warm = plan.def.id === 'demon';
+  /* The title is its own element so a phone can drop it: "PYROTH" always fits,
+     "PYROTH — THE FLAME DEMON" does not. */
+  el.bossName.querySelector('b').textContent = plan.def.name;
+  el.bossName.querySelector('.ttl').textContent = ' — ' + plan.def.title;
+  el.bossName.style.color = warm ? '#ffb488' : '#aee9ff';
+  el.dot.style.color = el.dot.style.background = warm ? '#ff6a1e' : '#5fd0ff';
+  el.bossFill.classList.toggle('ice', !warm);
+  el.bossFill.style.width = '100%';
+  el.bossLag.style.width = '100%';
+  hudBossHit();
+}
+function hudBossHit() {
+  const f = Math.max(0, B.hp) / Math.max(1, B.maxHp);
+  el.bossFill.style.width = (f * 100) + '%';
+  el.bossLag.style.width = (f * 100) + '%';
+  el.spark.style.setProperty('--w', (f * 100) + '%');
+  el.spark.classList.remove('on');
+  void el.spark.offsetWidth;                    // restart the sweep animation
+  el.spark.classList.add('on');
+  el.wave.innerHTML = '<b class="wv">WAVE ' + ((B.plan ? B.plan.index : 0) + 1) + '</b>' +
+    Math.ceil(B.hp) + ' / ' + B.maxHp;
+}
+function hudPlayer() {
+  const f = LOGIC.clamp(P.hp / P.maxHp, 0, 1);
+  el.pFill.style.width = (f * 100) + '%';
+  el.pLag.style.width = (f * 100) + '%';
+  el.pTag.textContent = 'HP ' + Math.max(0, Math.round(P.hp));
+  el.pPanel.classList.toggle('low', f < 0.34);
+}
+function hudCombo(n) {
+  el.comboN.textContent = '×' + n;
+  el.combo.classList.toggle('on', n >= 2);
+  if (n >= 2) {
+    el.combo.classList.remove('pop');
+    void el.combo.offsetWidth;
+    el.combo.classList.add('pop');
+  }
+}
+/* Cooldown pies are one CSS variable per slot — cheaper and smoother than
+   redrawing anything, and it keeps the timing logic in the pure block. */
+function hudCooldowns() {
+  for (const btn of el.slots) {
+    const a = LOGIC.ACTIONS[btn.dataset.act];
+    const f = LOGIC.cdFraction(G.t, P.readyAt[btn.dataset.act], a.cd);
+    btn.style.setProperty('--cd', f.toFixed(3));
+    btn.classList.toggle('ready', f <= 0);
+    btn.classList.toggle('cool', f > 0);
+  }
+}
+
+/* ================================= input ================================= */
+/* Keyboard for the desk, big friendly buttons for the sofa. */
+addEventListener('keydown', (e) => {
+  const k = e.key.toLowerCase();
+  if (k === ' ' || k === 'arrowleft' || k === 'arrowright') e.preventDefault();
+  if (e.repeat) return;
+  if (k === 'arrowleft' || k === 'a') tryMove(-1);
+  else if (k === 'arrowright' || k === 'd') tryMove(1);
+  else if (k === 'j' || k === ' ') tryAttack('quick');
+  else if (k === 'k') tryAttack('heavy');
+  else if (k === 'l') tryAttack('bolt');
+  else if (k === 'r' || k === 'enter') { if (G.state === 'defeat') newRun(); }
+});
+function tap(node, fn) {
+  node.addEventListener('pointerdown', (e) => { e.preventDefault(); node.classList.add('down'); fn(); });
+  for (const up of ['pointerup', 'pointercancel', 'pointerleave'])
+    node.addEventListener(up, () => node.classList.remove('down'));
+}
+for (const btn of el.slots) tap(btn, () => tryAttack(btn.dataset.act));
+tap(document.getElementById('dL'), () => tryMove(-1));
+tap(document.getElementById('dR'), () => tryMove(1));
+addEventListener('pointerdown', () => { if (G.state === 'defeat') newRun(); });
+if (matchMedia('(pointer: coarse)').matches) document.body.classList.add('touch');
+addEventListener('touchstart', () => document.body.classList.add('touch'), { once: true, passive: true });
+
+/* ================================ camera ================================= */
+/* One rig, never cut. It orbits on its own slow clock, leans toward whichever
+   side the player commits to, and rides the trauma. The aim sits between the
+   two fighters so both silhouettes stay in frame. */
+/* Composition: the camera sits three-quarters behind the player, not straight
+   behind him — from directly behind, his own cape hides the entire character. */
+/* Composition: three-quarters behind the player, and *inside* the ring of
+   pillars — at 10.8 the orbit put a pillar between the lens and the fight.
+   Portrait phones get a wider lens and a little more room, or the fight
+   overflows the frame and the HUD eats the player. */
+const lensFov = () => (innerWidth < innerHeight ? 64 : 48);
+const lensRoom = () => (innerWidth < innerHeight ? 1.3 : 1);
+/* A narrow frame wants the two fighters lined up, not shot across. */
+const lensTheta = () => (innerWidth < innerHeight ? 0.34 : 0.58);
+const camRig = { theta: 0.58, dist: 8.7, height: 5.5, aim: new THREE.Vector3(0, 1.8, 0.4) };
+const _aim = new THREE.Vector3();
+function updateCamera(dt, rt) {
+  const dead = G.state === 'defeat';
+  camRig.theta = LOGIC.damp(camRig.theta,
+    lensTheta() + 0.2 * Math.sin(rt * 0.1) + P.x * 0.04, 0.9, dt);
+  camRig.dist = LOGIC.damp(camRig.dist,
+    (dead ? 10.6 : 8.7) * lensRoom() + trauma * 0.7, 1.5, dt);
+  camRig.height = LOGIC.damp(camRig.height, (dead ? 6.8 : 5.5) * lensRoom(), 1.5, dt);
+  _aim.set(P.x * 0.24, 1.85, BZ * 0.3 + 1.1);
+  camRig.aim.lerp(_aim, 1 - Math.exp(-2.4 * dt));
+  const s = trauma * trauma;
+  const jx = (Math.random() - 0.5) * 0.6 * s, jy = (Math.random() - 0.5) * 0.6 * s,
+    jz = (Math.random() - 0.5) * 0.45 * s;
+  camera.position.set(Math.sin(camRig.theta) * camRig.dist + jx,
+    camRig.height + jy, Math.cos(camRig.theta) * camRig.dist + jz);
+  camera.lookAt(camRig.aim.x, camRig.aim.y + jy * 0.4, camRig.aim.z);
+  camera.rotation.z += (Math.random() - 0.5) * 0.055 * s;
+  camera.fov = LOGIC.damp(camera.fov, lensFov() + s * 4.5, 5, dt);
+  camera.updateProjectionMatrix();
+}
+
+/* ================================= loop ================================== */
+let last0 = 0, frames = 0, msSum = 0, avgMs = 16.7;
+
+function step(dtRaw) {
+  const raw = LOGIC.clamp(dtRaw, 0, 0.05);
+  const dt = scaledDt(raw);
+  G.t += dt;
+  if (G.state === 'fight') G.runT += dt;
+  updatePlayer(dt, G.t);
+  updateBoss(dt);
+  updateFx(dt, G.t, raw);
+  updateShards(dt);
+  hudCooldowns();
+  const c = LOGIC.comboTick(G.combo, G.t, G.lastHit);
+  if (c !== G.combo) { G.combo = c; hudCombo(c); }
+  updateCamera(raw, G.t);
+}
+
+function draw() { renderer.info.reset(); composer.render(); }
+function frame(now) {
+  const t0 = performance.now();
+  step((now - last0) / 1000);
+  last0 = now;
+  draw();
+  msSum += performance.now() - t0;
+  frames++;
+  avgMs = msSum / Math.max(1, frames);
+  if (frames === 1 || frames % 10 === 0) {
+    /* A trickle of live state into a hidden node: enough to diagnose a build
+       that is actually running, with no console and no extra pixels on screen. */
+    document.getElementById('probe').textContent = JSON.stringify({
+      t: +G.t.toFixed(1), state: G.state, boss: B.def ? B.def.id : null, bhp: Math.round(B.hp),
+      php: Math.round(P.hp), phase: B.st ? B.st.phase : null, dist: +camRig.dist.toFixed(2),
+      flash: +flashAmt.toFixed(3), vig: +vigAmt.toFixed(3), trauma: +trauma.toFixed(2),
+      ts: +timeScale.toFixed(2), calls: renderer.info.render.calls, ms: +avgMs.toFixed(1),
+      errs: errs.length,
+    });
+  }
+  requestAnimationFrame(frame);
+}
+
+/* ================================= boot ================================== */
+/* The real start-up runs at the very bottom of this file, once every binding
+   it touches has been initialised. */
+
+/* ================================= probe ================================= */
+/* Headless verification. A WebGL scene is awkward to test, so the trick is to
+   drive the game from a fixed timestep with a seeded PRNG and then read numbers
+   back out — including pixels, so "it glows" becomes a measurement rather than
+   an opinion. Everything lands as JSON in #probe and window.__probe. */
+function lumaProbe() {
+  const gl = renderer.getContext();
+  const W = gl.drawingBufferWidth, H = gl.drawingBufferHeight;
+  const w = Math.max(2, Math.floor(W * 0.5)), h = Math.max(2, Math.floor(H * 0.4));
+  const x = Math.floor((W - w) / 2), y = Math.floor((H - h) / 2);
+  const buf = new Uint8Array(w * h * 4);
+  gl.readPixels(x, y, w, h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+  let sum = 0, bright = 0, sat = 0;
+  for (let i = 0; i < buf.length; i += 4) {
+    const r = buf[i] / 255, g = buf[i + 1] / 255, b = buf[i + 2] / 255;
+    const l = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    sum += l;
+    if (l > 0.7) bright++;
+    sat += Math.max(r, g, b) - Math.min(r, g, b);
+  }
+  const n = buf.length / 4;
+  return { meanLuma: +(sum / n).toFixed(3), brightFrac: +(bright / n).toFixed(4),
+    meanSat: +(sat / n).toFixed(3) };
+}
+/* A NaN anywhere in the graph is the classic silent killer of a 3D app —
+   one bad divide and the fighter vanishes. Walk everything and check. */
+function nanScan() {
+  let bad = 0, count = 0;
+  scene.traverse((o) => {
+    count++;
+    const p = o.position, s = o.scale;
+    if (![p.x, p.y, p.z, s.x, s.y, s.z].every(Number.isFinite)) bad++;
+  });
+  return { objects: count, nanObjects: bad };
+}
+function report(extra) {
+  const info = renderer.info.render;
+  const ns = nanScan();
+  const j = Object.assign({
+    mode: CAP.mode, seed: CAP.seed, state: G.state,
+    boss: B.def ? B.def.id : null, bossHp: Math.round(B.hp), bossMax: B.maxHp,
+    phase: B.st ? B.st.phase : null, playerHp: Math.round(P.hp), side: P.side,
+    x: +P.x.toFixed(2), combo: G.combo, best: G.best, slain: G.slain,
+    hits: G.hits, dodges: G.dodges, calls: info.calls, tris: info.triangles,
+    objects: ns.objects, nanObjects: ns.nanObjects,
+    timeScale: +timeScale.toFixed(2), avgMs: +avgMs.toFixed(2), errors: errs,
+  }, extra || {});
+  const txt = JSON.stringify(j);
+  document.getElementById('probe').textContent = txt;
+  document.title = 'probe · ' + CAP.mode + ' · ' + G.state;
+  window.__probe = j;
+  return j;
+}
+
+/* ================================= start ================================= */
+/* The handle handed to the optional capture harness in tests/capture.js. It is
+   inert unless the URL asks for a capture, and nothing in the game calls it. */
+window.__duel = {
+  step, draw, LOGIC, CFG, CAP, errs, scene, renderer, bloom, B, P, G, camRig,
+  warnZone, overEl, boot, spawnBoss, hudBoss, tryAttack, tryMove, newRun,
+  lumaProbe, nanScan, report,
+  get avgMs() { return avgMs; },
+  set avgMs(v) { avgMs = v; },
+  get timeScale() { return timeScale; },
+};
+
+newRun();
+camera.fov = lensFov();          // right lens for the very first frame
+camera.updateProjectionMatrix();
+if (CAP.mode) {
+  /* Loaded on demand, so the game never ships a line of test harness. */
+  import('./tests/capture.js')
+    .then((m) => m.runCapture(window.__duel, CAP.mode))
+    .catch((e) => { boot.style.display = 'none'; report({ loadError: String(e.message || e) }); });
+} else {
+  boot.style.display = 'none';
+  last0 = performance.now();
+  requestAnimationFrame(frame);
+}
+
+/* @@END@@ */
+
+</script>
+</body>
+</html>
