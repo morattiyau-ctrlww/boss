@@ -22,10 +22,14 @@ open index.html through a local server, e.g.
 | `J` (or `Space`) | **Quick Slash** — fast, 9 damage, 0.42s cooldown |
 | `K` | **Heavy Strike** — 26 damage, 3.2s cooldown, shockwave + debris |
 | `L` | **Magic Bolt** — 14 damage, ranged, 1.3s cooldown |
+| `M` | Mute / unmute (the ♪ button, top-left, does the same) |
 | `R` | Restart, once you are dead |
 
 On a phone the same moves appear as touch buttons: a dodge pad bottom-left, the
 three attacks bottom-right. They show up automatically on a coarse pointer.
+
+Browsers refuse to make noise before you touch the page, so the music starts on
+your first key or tap. Until then the ♪ button breathes rather than lying to you.
 
 ## The rules
 
@@ -43,15 +47,45 @@ three attacks bottom-right. They show up automatically on a coarse pointer.
   swings, not less warning.
 - Drop to 0 HP and you get a DEFEATED screen with your run in numbers.
 
+## Sound
+
+There is no audio file in this project either. Every sound is built at run time
+out of oscillators and filtered noise — the same way the arena builds its
+geometry — through one Web Audio graph: a soft-clip saturator into a compressor,
+with a two-tap damped-delay room as the send.
+
+**The score** is a 132 BPM synthwave loop, four bars of *i–VI–III–VII* in D
+minor, played by five voices: kick (sine drop plus a beater click), snare, hats,
+a saw bass with a sub, a stereo-detuned arp lead, and a pad that holds each bar.
+The boss picks the key: the Flame Demon plays it in D, the Ice Titan a fifth
+above with a glassier lead and a bell on top. Waves add layers — an extra kick,
+sixteenth-note hats, the lead on every sixteenth — and the lead gets louder each
+time, so a late wave sounds late.
+
+**The effects** are all riffs on the same handful of primitives. The bolt is
+frequency modulation, which is why it spits. The warning is three rising blips
+panned to the *side that is about to be lit up*, plus a riser that swells all the
+way into the strike. A hit is a crack, a body thud and a sub; a hit on the titan
+adds a glassy partial. Killing a boss ducks the music under the explosion, and
+slow motion pulls the loop back rather than slowing it down — the fight runs on
+scaled time, the music does not.
+
 ## How it is put together
 
 `index.html` is the whole game, organised as one file with signposts:
 interface → the pure rules → renderer/post-processing → arena → effects →
-player → cape → ribbon → boss → fight → input → HUD → camera/loop, then a small
-block of instrumentation.
+player → cape → ribbon → boss → fight → sound → input → HUD → camera/loop, then
+a small block of instrumentation.
 
 A few decisions worth naming:
 
+- **The score is data before it is sound.** `stepPlan(k)` turns a sixteenth index
+  into a list of notes, and it is a pure function of `k` — no running random
+  state, no `Math.random` anywhere in the signal path. That is what makes the
+  music reviewable in Node (`tests/audio.test.js` reads the harmony and the drum
+  grid) *and* reproducible enough to render off-line and measure sample by
+  sample (`#cap=audio`). The same `voiceStep` call drives the live pump and the
+  off-line render, so the thing being measured is the thing being played.
 - **The rules and the renderer do not know about each other.** Everything that
   decides the fight — sides, damage, crits, combos, cooldowns, and the boss's
   whole attack state machine — lives in a marked block of pure functions with no
@@ -72,11 +106,13 @@ A few decisions worth naming:
 
 ## Verifying it
 
-Two independent layers, because "it looks fine in a screenshot" is not a
+Three independent layers, because "it looks fine in a screenshot" is not a
 verification method.
 
 ```
-node tests/logic.test.js
+node tests/logic.test.js     # the rules
+node tests/audio.test.js     # the score
+node tests/sweep.mjs         # the pictures and the signal, in a real browser
 ```
 
 113 checks, no browser, no three.js. It lifts the marked pure-logic block
@@ -88,7 +124,15 @@ frame rate is doing. It ends with sixty complete waves played end to end by a
 bot, asserting that health never leaves its legal range and that every hit which
 lands costs exactly the boss's damage.
 
-The second layer is in-browser. A `#cap=` URL runs a scripted, seeded,
+58 more, also in Node, over the score: the tempo and the sixteen-sixteenth bar,
+the four chords and their roots, that every chord tone is really in D natural
+minor (and A minor once transposed for the titan), that the bass only ever plays
+the root of the bar it is in, that the lead stays on chord tones, the drum grid,
+the fill on the eighth bar, the layers that arrive as the waves climb, and that
+the whole thing is deterministic — the same sixteenth names the same notes every
+time. No audio is rendered; this is the theory.
+
+The third layer is in-browser. A `#cap=` URL runs a scripted, seeded,
 fixed-step slice of the real game, renders one frame, reads pixels back out of
 it, and writes a JSON report with its own pass/fail checks into `#probe` (and
 `window.__probe`, and the page title). The harness lives in `tests/capture.js`
@@ -108,16 +152,29 @@ it. Modes:
 | `gfx` | Bloom measurably does something; the frame is dark but not black, and has colour |
 | `bench` | Frames complete and the draw-call count stays modest |
 | `autoplay` | A minute of bot play across several waves: no crash, no NaN, no stall |
+| `audio` | Every sound is rendered off-line and measured: levels, spectrum, stereo, determinism |
 
 ```
 http://localhost:8000/index.html#cap=dodge
 ```
 
-All fourteen modes pass together — 51 in-browser checks, 0 uncaught errors. What
-they measure on this machine (software GL in headless Chrome; a real GPU is far
-quicker): ~150-166 draw calls and ~4.5-5.5k triangles per frame, 0 NaNs anywhere
-in the scene graph, and a frame at mean luma ~0.22 where bloom raises the
-bright-pixel fraction from 0.009 to 0.020 on the very same frame.
+`tests/sweep.mjs` runs every one of those in headless Chrome (it serves the
+folder itself and drives the browser over the DevTools protocol — `--shots` also
+writes a PNG per mode). All fifteen modes pass together on this machine: 69
+in-browser checks, 0 uncaught errors, 0 NaNs. What they measure (software GL in
+headless Chrome; a real GPU is far quicker): ~150-168 draw calls and ~4-5.5k
+triangles per frame, a frame at mean luma ~0.22 where bloom raises the
+bright-pixel fraction from 0.009 to 0.020 on the very same frame, and — for the
+audio — a loop at 0.154 RMS peaking at 0.68 with nothing clipping, kick energy at
+60Hz, hats landing measurably on the beat, a left and a right channel that
+differ, 17 sound effects that are all audible and none of them a click, and two
+renders of the same bar agreeing to within 3e-7 (float32 rounding, i.e. there is
+no unseeded noise in the signal path).
+
+`#cap=audio` needs real time rather than virtual time, which is why the sweep
+drives the browser itself: an `OfflineAudioContext` render is not something
+`--virtual-time-budget` can hurry along, and the probe would still be mid-render
+when the clock expired.
 
 ### Bugs this caught that the eye did not
 
@@ -132,22 +189,37 @@ bright-pixel fraction from 0.009 to 0.020 on the very same frame.
 - Both bosses read as featureless blobs until their limbs were moved *outside*
   the torso silhouette and the stacked additive shells were pulled back from
   full-body blowouts.
+- The warning's tail was **78 times too quiet** where it mattered most. Rendering
+  the cue off-line and measuring its last 100 ms reported 0.0002 RMS: the three
+  blips were long gone and the drone had decayed under the strike. Replacing the
+  drone's slow fade with a riser that *swells into* the hit measures 0.0274 RMS at
+  the same moment — the sound now builds exactly where the danger is.
+- The hats were inaudible at 8.2kHz, and the hats' *beat* was only checkable once
+  the probe was right: a single Goertzel bin over two seconds reports nothing for
+  a broadband 45 ms transient, so the test measures broadband brightness on the
+  beat against the same window off it (0.018 vs 0.010) instead.
 
 ## Known limitations
 
-- No audio. Nothing in the brief asked for it; WebAudio is the obvious next step.
+- The score is one eight-bar loop. It has heat and two keys, but it is a loop,
+  not a soundtrack — no transitions, no boss-specific tempo.
 - No pause. It is a boss fight, not a document.
 - Both bosses share one skeleton and one animation set, and differ in geometry,
-  materials, particle behaviour and strike effects. That is a deliberate budget
-  choice, and it is why the second boss was cheap to build.
+  materials, particle behaviour, strike effects and key. That is a deliberate
+  budget choice, and it is why the second boss was cheap to build.
 - The capture modes need the folder served over HTTP, since they import a module.
-- Verified in Chrome. The code sticks to standard three.js and CSS, but Safari
-  and Firefox have not been walked through by hand.
+  `tests/sweep.mjs` serves it for you.
+- Verified in Chrome. The code sticks to standard three.js, CSS and Web Audio,
+  but Safari and Firefox have not been walked through by hand — Safari in
+  particular has needed a `webkitAudioContext` fallback (present) and a real
+  gesture (also the case in Chrome).
 
 ## Layout
 
 ```
-index.html           the game (single file)
-tests/logic.test.js  113 headless checks over the extracted rules block
-tests/capture.js     optional in-page capture harness, loaded by #cap= only
+index.html            the game (single file)
+tests/logic.test.js   113 headless checks over the extracted rules block
+tests/audio.test.js   58 headless checks over the extracted score
+tests/capture.js      optional in-page capture harness, loaded by #cap= only
+tests/sweep.mjs       runs every capture mode in headless Chrome
 ```
