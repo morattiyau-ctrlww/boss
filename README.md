@@ -2,7 +2,9 @@
 
 A stylized low-poly 3D boss fight in **one HTML file**. Two bosses, three
 attacks, a cloth-simulated cape, and a warning zone you have exactly 1.5 seconds
-to get out of.
+to get out of. Every blow lands with its own impact signature — a light, a wall
+of force running out along the floor, a shove on the lens — and the heaviest ones
+are held for a few frames of hit-stop while the screen keeps moving on real time.
 
 Three.js r160 (pinned) is pulled from a CDN through an import map. There is no
 build step, no bundler, no `node_modules`, and no external model, texture or
@@ -100,6 +102,24 @@ A few decisions worth naming:
   sword's world matrix** rather than spawned geometry.
 - **Every glow is emissive + bloom.** UnrealBloomPass at 0.82/0.62/0.60, under
   an ACES filmic curve so the highlights roll off instead of clipping.
+- **Every effect is pooled, and nothing is allocated mid-swing.** A hit raises a
+  light out of a standing pool of four, opens a blast crest out of a pool of
+  three, and throws its sparks into the one particle field; the bolt, the rings,
+  the arcs and the flashes are pools too. A `PointLight` built per hit would
+  change the light count and recompile every lit material in the arena at the
+  worst possible moment, which is why the impact lights are furniture turned up
+  for a fifth of a second instead.
+- **Hit-stop is counted in frames, not seconds.** A quick slash holds the world
+  two frames, a heavy strike four, a killing blow six — the same *feel* on a 60Hz
+  phone and a 144Hz monitor — while everything that is not the world (camera,
+  flash, aberration, bloom pulse) keeps running on real time, so a freeze can
+  never strand an overlay at full strength.
+- **The blast wave is an edge, not a sheet.** The floor front is a torus rim
+  rather than a filled ring, because the ring pool draws an additive annulus 42%
+  of its radius thick: at shockwave size that is a bright *sheet* of floor, and
+  its area grows with the square of the radius while the bloom pass smears all of
+  it over the arena. A rim costs a fraction of the light and reads better — a
+  wave *is* an edge.
 - **Screen furniture runs on real time, the fight runs on scaled time.** Slow
   motion and hit-stop stretch the fight, never the HUD or the flashes.
 
@@ -112,6 +132,7 @@ verification method.
 ```
 node tests/logic.test.js     # the rules
 node tests/audio.test.js     # the score
+node tests/syntax.test.js    # the page still parses
 node tests/sweep.mjs         # the pictures and the signal, in a real browser
 ```
 
@@ -132,6 +153,17 @@ the fill on the eighth bar, the layers that arrive as the waves climb, and that
 the whole thing is deterministic — the same sixteenth names the same notes every
 time. No audio is rendered; this is the theory.
 
+8 more run nothing at all. They lift each `<script>` block out of `index.html` —
+the import map and the module — hand it to the JavaScript parser (`node --check`,
+or `JSON.parse` for the map) and report the failure against the line in
+*`index.html`*, because a syntax error in that file does not throw where anyone
+is looking: the module simply never runs, the page keeps its loading screen, and
+the browser checks time out one by one instead of failing once. It also checks
+that the things the other suites lean on are still *in* the file, since a
+refactor that quietly drops one would still parse: the photo upload hook, the
+torso shader patch, the chromatic aberration pass, the pooled effects, and the
+hit-stop that counts frames.
+
 The third layer is in-browser. A `#cap=` URL runs a scripted, seeded,
 fixed-step slice of the real game, renders one frame, reads pixels back out of
 it, and writes a JSON report with its own pass/fail checks into `#probe` (and
@@ -149,9 +181,12 @@ it. Modes:
 | `win` | A lethal hit wins the wave, heals you, and spawns the other, tougher boss |
 | `lose` | Death shows DEFEATED, health never goes negative, restart resets |
 | `demon` / `ice` | Both bosses stand up and render |
+| `photo` | An uploaded photo is painted on the torso and *only* the torso — the limbs keep their own material |
+| `arms` | The wind-up lights the fist that is about to swing, and only that one |
 | `gfx` | Bloom measurably does something; the frame is dark but not black, and has colour |
+| `vfx` | The juice itself: the trail, the impact light, the crest, the chromatic fringe and the freeze, held on the money frame and measured |
 | `bench` | Frames complete and the draw-call count stays modest |
-| `autoplay` | A minute of bot play across several waves: no crash, no NaN, no stall |
+| `autoplay` | A minute of bot play across several waves: no crash, no NaN, no stall, and no frame washed out |
 | `audio` | Every sound is rendered off-line and measured: levels, spectrum, stereo, determinism |
 
 ```
@@ -160,16 +195,48 @@ http://localhost:8000/index.html#cap=dodge
 
 `tests/sweep.mjs` runs every one of those in headless Chrome (it serves the
 folder itself and drives the browser over the DevTools protocol — `--shots` also
-writes a PNG per mode). All fifteen modes pass together on this machine: 69
+writes a PNG per mode). All eighteen modes pass together on this machine: 129
 in-browser checks, 0 uncaught errors, 0 NaNs. What they measure (software GL in
-headless Chrome; a real GPU is far quicker): ~150-168 draw calls and ~4-5.5k
-triangles per frame, a frame at mean luma ~0.22 where bloom raises the
-bright-pixel fraction from 0.009 to 0.020 on the very same frame, and — for the
-audio — a loop at 0.154 RMS peaking at 0.68 with nothing clipping, kick energy at
+headless Chrome; a real GPU is far quicker): ~150-190 draw calls and ~4-7k
+triangles per frame, a dark frame at mean luma 0.22 where bloom takes the
+bright-pixel fraction from 0.016 to 0.029 on the very same frame, the held
+heavy-impact frame at a mean luma of 0.57 with 0.37 of its centre crop clipped
+(against a budget of 0.62 / 0.42), and, for the audio, a loop at 0.154 RMS
+peaking at 0.68 with nothing clipping, kick energy at
 60Hz, hats landing measurably on the beat, a left and a right channel that
 differ, 17 sound effects that are all audible and none of them a click, and two
 renders of the same bar agreeing to within 3e-7 (float32 rounding, i.e. there is
 no unseeded noise in the signal path).
+
+### The one check that is about taste
+
+"Juicier" and "washed out" look identical in a still, so the `vfx` mode holds the
+heavy impact on the frame it is frozen to and judges the *picture*:
+
+- The centre crop must stay under a mean luma of 0.62 and clip less than 42% of
+  itself. That budget is deliberately *tighter* than what the game already did on
+  a single frame before any of this existed: three runs of the pre-feature build
+  in a minute of bot play peak at 0.55 / 0.55 / 0.56 of the crop clipped, so 0.42
+  is a bar that build does not itself clear. Measured, not guessed — which is what
+  makes it a regression guard instead of a number someone liked.
+- The same crop has to measure distinctly brighter than the same arena half a
+  minute earlier at rest (0.06 clipped at rest, 0.37 on the hit), or the "fix"
+  would be indistinguishable from switching the hit off.
+- And it still has to read as a *picture*: edge energy — the average jump between
+  neighbouring pixels — has to stay above half the resting frame's. A white-out
+  has none, because every pixel holds the same value.
+
+`autoplay` guards the other half: a minute of bot play, sampled every two
+seconds, has to keep its **median** clipped fraction under 0.30. The margin is
+real but not generous, so it is stated as a range: three consecutive runs land at
+0.21 / 0.27 / 0.21 here, against 0.14 / 0.16 / 0.18 in the pre-feature build.
+The 90th percentile (~0.58 here, ~0.37 pre-feature) and the worst frame (~0.75
+here, ~0.55 pre-feature) are printed beside it but deliberately not asserted on:
+the hit-stop holds the peak frame on screen for two frames longer here, so a
+sampler on a fixed beat lands on a peak roughly three times as often — which
+makes the two builds' percentiles hard to compare even though the ordinary frame
+in each is. The two numbers that *are* asserted are the ones that mean something:
+the ordinary frame, and the money frame.
 
 `#cap=audio` needs real time rather than virtual time, which is why the sweep
 drives the browser itself: an `OfflineAudioContext` render is not something
@@ -198,6 +265,22 @@ when the clock expired.
   the probe was right: a single Goertzel bin over two seconds reports nothing for
   a broadband 45 ms transient, so the test measures broadband brightness on the
   beat against the same window off it (0.018 vs 0.010) instead.
+- The wide filled rings the heavy strike and the bolt detonation used to throw
+  turned the floor into a light sheet: the ring pool's annulus is 42% of its
+  radius thick, and bloom smeared the whole thing across the arena. Swapping them
+  for torus rims took the clipped share of the held frame from **0.60 to 0.37**
+  while the edge energy — the "still reads as a picture" number — went *up*.
+- One of the newest checks **could not fail**. It merged the pixel probe's
+  readings into its report with `Object.assign`, which renamed the number the
+  check was reading and left the one it compared against at its initial zero, so
+  it passed every run and reported nothing. It was caught the only way it could
+  be: the screenshot next to it was obviously still hazy while the check was
+  green.
+- The comet-tail check was calibrated on six frames against a fixed margin, which
+  put its threshold inside the arena's own breathing noise — running the suite
+  twice at once on a busy machine flipped it. It now measures eight frames and
+  asserts the *shape* of the curve (the field spawns motes faster with the comet
+  up), with a margin an order of magnitude above the drift.
 
 ## Known limitations
 
@@ -209,6 +292,23 @@ when the clock expired.
   budget choice, and it is why the second boss was cheap to build.
 - The capture modes need the folder served over HTTP, since they import a module.
   `tests/sweep.mjs` serves it for you.
+- No quality setting. The impact lights, the rim crests, the hit-stop and the
+  chromatic fringe are always on, with no dial to turn them down; they are cheap
+  (four standing lights, three rims, one particle field, everything pooled), but
+  a very slow machine has no way to ask for less.
+- The heaviest pile-up of all — a boss dying while a bolt lands on it — is
+  *allowed* to blow out, and does so in the build without any of this in it too.
+  What is guarded is that the ordinary frame stays readable and the money frame
+  stays inside its budget.
+- Two measurements have thin margins rather than comfortable ones, and are stated
+  as ranges for that reason: the `autoplay` median sits 0.21-0.27 under a 0.30
+  budget, and the held heavy frame measures 0.36-0.37 clipped under a 0.42 one.
+  Both are smoke alarms on software GL, not specifications.
+- The pre-feature comparison is only as good as the probes that can still run
+  against old code. `autoplay` and `heavy` work against it (it reads the pixel
+  report, which the old build also produces); `vfx` does not, because it reaches
+  for the pooled-effect internals that the old build does not have — it throws
+  rather than reporting a number, which is the honest failure.
 - Verified in Chrome. The code sticks to standard three.js, CSS and Web Audio,
   but Safari and Firefox have not been walked through by hand — Safari in
   particular has needed a `webkitAudioContext` fallback (present) and a real
@@ -220,6 +320,9 @@ when the clock expired.
 index.html            the game (single file)
 tests/logic.test.js   113 headless checks over the extracted rules block
 tests/audio.test.js   58 headless checks over the extracted score
+tests/syntax.test.js  8 checks that the page's script blocks parse and its hooks exist
 tests/capture.js      optional in-page capture harness, loaded by #cap= only
 tests/sweep.mjs       runs every capture mode in headless Chrome
+shots/                one PNG per capture mode, written by sweep.mjs --shots
+                      (generated, so gitignored)
 ```
