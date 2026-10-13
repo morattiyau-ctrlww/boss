@@ -175,6 +175,34 @@ body.touch #hint{display:none}
   box-shadow:0 0 8px #ff5d75;transform:rotate(-45deg);opacity:0;transition:opacity .2s}
 #snd.off .slash{opacity:1}
 
+/* ---- boss photo ----------------------------------------------------------- */
+/* It borrows the sound button's whole look on purpose: same glass, same
+   hairline, same height — it is a control, not a billboard. Until a photo has
+   been chosen it breathes, because a control nobody notices is not a feature. */
+#photo{position:fixed;top:15px;left:57px;z-index:7;display:flex;gap:6px;align-items:stretch}
+#photoBtn{display:flex;align-items:center;gap:8px;height:34px;padding:0 12px 0 9px;
+  font:inherit;font-size:9.5px;letter-spacing:.18em;color:#8fdcff;cursor:pointer;
+  background:var(--glass);border:1px solid var(--line);border-radius:11px;
+  backdrop-filter:blur(9px);-webkit-backdrop-filter:blur(9px);
+  box-shadow:0 8px 26px rgba(0,0,0,.5),inset 0 1px 0 rgba(180,240,255,.07);
+  transition:color .25s,border-color .25s,transform .09s}
+#photoBtn .ic{font-size:13px;line-height:1;filter:drop-shadow(0 0 8px currentColor)}
+#photoBtn .tx{white-space:nowrap}
+#photoBtn:active{transform:translateY(1px) scale(.97)}
+#photoBtn.idle{color:#7d93a6;border-color:rgba(150,200,225,.34);
+  animation:sndNudge 2.4s ease-in-out infinite}
+#photoBtn.on{color:#9ff0ff;border-color:rgba(110,240,255,.5);text-shadow:0 0 10px currentColor}
+#photoBtn img{width:20px;height:20px;border-radius:5px;object-fit:cover;
+  border:1px solid rgba(150,220,255,.5);box-shadow:0 0 10px rgba(110,240,255,.35)}
+#photoBtn img[hidden]{display:none}
+#photoX{width:26px;font:inherit;font-size:11px;color:#ff8f9e;cursor:pointer;
+  background:var(--glass);border:1px solid rgba(255,120,140,.36);border-radius:11px;
+  backdrop-filter:blur(9px);-webkit-backdrop-filter:blur(9px)}
+#photoX[hidden]{display:none}
+#photoX:active{transform:translateY(1px) scale(.95)}
+/* The canvas is full-bleed, so a photo dropped anywhere on it is fair game. */
+body.dragging #photoBtn{color:#fff;border-color:rgba(160,245,255,.85);transform:scale(1.04)}
+
 /* ---- full-screen feedback ------------------------------------------------- */
 #vig,#flash{position:fixed;inset:0;pointer-events:none!important;z-index:6;opacity:0}
 #vig{background:radial-gradient(ellipse at 50% 52%,transparent 52%,rgba(255,20,50,.62) 100%)}
@@ -200,11 +228,18 @@ body.touch #hint{display:none}
   /* The phone puts the boss panel across the top, so the sound button drops
      below it — still clear of the combo counter, which is centred. */
   #snd{top:76px;left:10px}
+  /* The upload control follows it down, and drops its label: on a phone the
+     icon alone is what fits beside the dodge pad. */
+  #photo{top:76px;left:52px}
+  #photoBtn .tx{display:none}
+  #photoBtn{padding:0 10px}
 }
 @media(max-width:420px){
   /* A narrow phone has to fit a dodge pad and three attacks side by side. */
   #keys{gap:7px}
   #dpad{gap:7px}
+  #photoBtn{padding:0 8px}
+  #photoX{width:24px}
   #keys .slot,#dpad button{width:48px;height:48px;border-radius:11px}
   .slot .glyph{font-size:19px}
   .slot .nm{font-size:6.5px;letter-spacing:.06em}
@@ -252,6 +287,17 @@ body.touch #hint{display:none}
   </div>
 </div>
 <button id="snd" class="idle" aria-label="Sound" aria-pressed="false">♪<i class="slash"></i></button>
+<!-- Feature 1: put your own face on the boss. The picture lands on the torso
+     only — the arms, hands and head keep their own materials, so the wind-up
+     stays readable no matter what is pinned to his chest. -->
+<div id="photo">
+  <button id="photoBtn" class="idle" aria-label="Upload a photo for the boss">
+    <img id="photoThumb" alt="" hidden>
+    <span class="ic">▣</span><span class="tx">UPLOAD BOSS PHOTO</span>
+  </button>
+  <button id="photoX" aria-label="Remove the boss photo" hidden>✕</button>
+  <input id="photoFile" type="file" accept="image/*" hidden>
+</div>
 <div id="banner"><b>VICTORY</b><i></i></div>
 <div id="over"><h1>DEFEATED</h1><div class="stats"></div><div class="again">PRESS R &nbsp;/&nbsp; TAP TO RISE</div></div>
 <div id="vig"></div><div id="flash"></div>
@@ -269,6 +315,7 @@ import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 /* ==== PURE-LOGIC-START ==== */
@@ -450,8 +497,33 @@ const camera = new THREE.PerspectiveCamera(48, innerWidth / innerHeight, 0.1, 14
 
 const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
-const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.82, 0.62, 0.60);
+const BLOOM_BASE = 0.82;
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), BLOOM_BASE, 0.62, 0.60);
 composer.addPass(bloom);
+/* ---- chromatic aberration ------------------------------------------------ */
+/* The impact separation: the red channel is pushed out from the centre and the
+   blue pulled in, which the eye reads as a shockwave through the lens itself.
+   It is a full-screen pass, so it is *disabled* unless something has just hit
+   something: idle frames pay nothing for it. */
+const chroma = new ShaderPass({
+  uniforms: { tDiffuse: { value: null }, uAmount: { value: 0 } },
+  vertexShader: `
+    varying vec2 vUv;
+    void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: `
+    uniform sampler2D tDiffuse; uniform float uAmount; varying vec2 vUv;
+    void main(){
+      vec2 dir = (vUv - 0.5) * uAmount;
+      vec4 c = texture2D(tDiffuse, vUv);
+      float r = texture2D(tDiffuse, vUv + dir).r;
+      float b = texture2D(tDiffuse, vUv - dir).b;
+      /* A touch of the split back into the centre keeps the frame from looking
+         like a printing mistake rather than a punch. */
+      gl_FragColor = vec4(r, c.g, b, c.a);
+    }`,
+});
+chroma.enabled = false;
+composer.addPass(chroma);
 composer.addPass(new OutputPass());
 
 addEventListener('resize', () => {
@@ -574,7 +646,7 @@ scene.add(stageLight);
    straight into the buffer; dead slots are given size 0, so they cost nothing
    on the GPU. Custom attribute names (aColor/aSize) keep the shader clear of
    anything three's own prefix might declare. */
-const MAXP = 1500;
+const MAXP = 3000;
 const pPos = new Float32Array(MAXP * 3), pCol = new Float32Array(MAXP * 3), pSize = new Float32Array(MAXP);
 const pVel = new Float32Array(MAXP * 3), pLife = new Float32Array(MAXP), pMax = new Float32Array(MAXP);
 const pGrav = new Float32Array(MAXP), pDrag = new Float32Array(MAXP), pGrow = new Float32Array(MAXP);
@@ -718,39 +790,79 @@ function arc(o) {
   return s;
 }
 
-/* ---- magic bolts: a travelling sphere, its light, and a trail ------------ */
-const boltMat = new THREE.MeshBasicMaterial({ color: 0xdcbcff });
+/* ---- magic bolts: a pooled comet with a light and a tail ------------------ */
+/* Six comets exist for the whole game. A cast acquires one, flies it, and
+   releases it back to the pool: no geometry is built per cast and — the part
+   that used to cost real frames — no material is thrown away each time. The
+   light rides inside the comet group, so a hidden bolt costs nothing. */
+const BOLTP = 6;
 const boltGeo = new THREE.SphereGeometry(0.2, 12, 10);
-const bolts = [];
-function bolt(o) {
-  const m = new THREE.Mesh(boltGeo, boltMat.clone());
-  m.material.color.set(o.color || 0xc79bff);
-  const light = new THREE.PointLight(o.color || 0xc79bff, 26, 9, 2);
-  m.add(light);
+const cometTailGeo = new THREE.ConeGeometry(0.2, 1.7, 12, 1, true);
+const cometHaloGeo = new THREE.SphereGeometry(0.44, 14, 10);
+const boltPool = [];
+for (let i = 0; i < BOLTP; i++) {
+  const m = new THREE.Group();
+  const core = new THREE.Mesh(boltGeo, new THREE.MeshBasicMaterial({ color: 0xdcbcff }));
+  const halo = new THREE.Mesh(cometHaloGeo, new THREE.MeshBasicMaterial({ color: 0xc79bff,
+    transparent: true, opacity: 0.22, blending: THREE.AdditiveBlending, depthWrite: false }));
+  const tail = new THREE.Mesh(cometTailGeo, new THREE.MeshBasicMaterial({ color: 0xc79bff,
+    transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false,
+    side: THREE.DoubleSide }));
+  tail.rotation.x = -Math.PI / 2;          // the cone's point trails behind the comet
+  tail.position.z = -0.85;
+  const light = new THREE.PointLight(0xc79bff, 0, 11, 2);
+  m.add(core, halo, tail, light);
+  m.visible = false;
   scene.add(m);
-  bolts.push({ m, light, from: o.from.clone(), to: o.to.clone(), t: 0,
-    dur: o.dur || 0.34, arc: o.arc == null ? 0.9 : o.arc, color: o.color || 0xc79bff,
-    onHit: o.onHit });
+  boltPool.push({ m, core, halo, tail, light, t: 1, life: 0.34, arc: 0.9, onHit: null,
+    from: new THREE.Vector3(), to: new THREE.Vector3(), prev: new THREE.Vector3(),
+    color: new THREE.Color(0xc79bff) });
+}
+const _bp = new THREE.Vector3(), _bd = new THREE.Vector3();
+function bolt(o) {
+  let s = boltPool.find((p) => p.t >= 1);
+  if (!s) { s = boltPool[0]; for (const p of boltPool) if (p.t > s.t) s = p; }   // steal the oldest
+  s.t = 0;
+  s.life = o.dur == null ? 0.34 : o.dur;
+  s.arc = o.arc == null ? 0.9 : o.arc;
+  s.onHit = o.onHit;
+  s.color.set(o.color == null ? 0xc79bff : o.color);
+  s.from.copy(o.from); s.to.copy(o.to); s.prev.copy(o.from);
+  s.core.material.color.copy(s.color);
+  s.halo.material.color.copy(s.color);
+  s.tail.material.color.copy(s.color);
+  s.light.color.copy(s.color);
+  s.light.intensity = 34;
+  s.m.scale.setScalar(1);
+  s.m.visible = true;
+  return s;
 }
 function updateBolts(dt) {
-  for (let i = bolts.length - 1; i >= 0; i--) {
-    const b = bolts[i];
-    b.t += dt / b.dur;
-    const u = Math.min(1, b.t);
-    const p = new THREE.Vector3().lerpVectors(b.from, b.to, u);
-    p.y += Math.sin(u * Math.PI) * b.arc;
-    b.m.position.copy(p);
-    /* sparkle trail: a couple of motes shed every frame */
-    burst({ x: p.x, y: p.y, z: p.z, count: 2, color: b.color, speed: 1.1,
-      spread: 0.4, size: 0.13, life: 0.34, grav: 1.2, drag: 2.4 });
-    b.m.scale.setScalar(1 + Math.sin(b.t * 32) * 0.08);
+  for (const b of boltPool) {
+    if (b.t >= 1) continue;
+    b.t = Math.min(1, b.t + dt / b.life);
+    const u = b.t;
+    _bp.lerpVectors(b.from, b.to, u);
+    _bp.y += Math.sin(u * Math.PI) * b.arc;
+    /* Aim the comet down its own path, so the tail trails the flight whatever
+       arc the bolt was given. */
+    _bd.copy(_bp).sub(b.prev);
+    if (_bd.lengthSq() > 1e-9) b.m.lookAt(_bp.x + _bd.x, _bp.y + _bd.y, _bp.z + _bd.z);
+    const speed = _bd.length() / Math.max(1e-4, dt);
+    b.tail.scale.set(1 + Math.min(1.2, speed * 0.05), 1 + Math.min(2.4, speed * 0.1), 1);
+    b.prev.copy(_bp);
+    b.m.position.copy(_bp);
+    /* The tail itself: motes shed every frame, growing as they fall behind. */
+    burst({ x: _bp.x, y: _bp.y, z: _bp.z, count: 3, color: b.color, speed: 1,
+      spread: 0.5, size: 0.16, size1: 0.12, life: 0.44, grav: 1.3, drag: 2.4 });
+    b.halo.scale.setScalar(1 + Math.sin(b.t * 34) * 0.1);
+    b.core.scale.setScalar(1 + Math.sin(b.t * 32) * 0.09);
+    b.light.intensity = 34 * (0.75 + Math.sin(b.t * 41) * 0.25);
     if (u >= 1) {
-      burst({ x: p.x, y: p.y, z: p.z, count: 26, color: b.color, speed: 7,
-        spread: 0.9, size: 0.22, life: 0.55, grav: -2, drag: 1.6 });
-      ring({ x: p.x, z: p.z, y: p.y, color: b.color, r0: 0.35, r1: 3, life: 0.4, tilt: 0 });
-      scene.remove(b.m); b.m.material.dispose();
-      bolts.splice(i, 1);
-      if (b.onHit) b.onHit(p);
+      b.m.visible = false;
+      b.light.intensity = 0;
+      magicExplosion(_bp, b.color.getHex());
+      if (b.onHit) b.onHit(_bp.clone());
     }
   }
 }
@@ -786,11 +898,148 @@ function updateNumbers(dt) {
     d.el.style.opacity = String(Math.min(1, (1 - u) * 3));
   }
 }
-/* A hit spark: the shape of the burst tells you what kind of blow landed. */
+/* A hit spark: the shape of the burst tells you what kind of blow landed. The
+   flash at the point of contact is what makes a swing feel *connected* — it is
+   the one element that has to land on the exact frame of the impact. */
 function hitSpark(pos, color, big) {
+  slashImpact(pos, color, big);
   burst({ x: pos.x, y: pos.y, z: pos.z, count: big ? 34 : 16, color, speed: big ? 9 : 5.5,
     spread: 1, size: big ? 0.26 : 0.17, life: big ? 0.7 : 0.45, grav: -4, drag: 1.8 });
   ring({ x: pos.x, z: pos.z, y: pos.y, color, r0: 0.25, r1: big ? 4.4 : 1.9, life: big ? 0.45 : 0.3 });
+}
+
+/* ---- impact lights: a fixed pool of flashes ------------------------------ */
+/* A light created per hit would change the light count and recompile every lit
+   material in the scene at the worst possible moment. Four lights live in the
+   arena instead and are simply turned up for a fifth of a second. */
+const FLASHP = 4;
+const flashPool = [];
+for (let i = 0; i < FLASHP; i++) {
+  const l = new THREE.PointLight(0xffffff, 0, 12, 2);
+  l.visible = false;
+  scene.add(l);
+  flashPool.push({ l, t: 1, life: 0.16, peak: 0 });
+}
+function impactLight(o) {
+  let s = flashPool.find((p) => p.t >= 1);
+  if (!s) { s = flashPool[0]; for (const p of flashPool) if (p.t > s.t) s = p; }
+  s.t = 0;
+  s.life = o.life == null ? 0.16 : o.life;
+  s.peak = o.power == null ? 40 : o.power;
+  s.l.color.set(o.color == null ? 0xffffff : o.color);
+  s.l.distance = o.distance == null ? 12 : o.distance;
+  s.l.position.set(o.x, o.y == null ? 1.6 : o.y, o.z);
+  s.l.visible = true;
+  return s;
+}
+function updateImpacts(dt) {
+  for (const s of flashPool) {
+    if (s.t >= 1) { if (s.l.visible) { s.l.visible = false; s.l.intensity = 0; } continue; }
+    s.t = Math.min(1, s.t + dt / s.life);
+    s.l.intensity = s.peak * (1 - s.t) ** 2;
+  }
+}
+
+/* ---- the blast crest: a wall of force running out along the floor --------- */
+const crestGeo = new THREE.TorusGeometry(1, 0.055, 6, 44);
+const crestPool = [];
+for (let i = 0; i < 3; i++) {
+  const m = new THREE.Mesh(crestGeo, new THREE.MeshBasicMaterial({ color: 0xffffff,
+    transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }));
+  m.rotation.x = -Math.PI / 2;
+  m.visible = false;
+  world.add(m);
+  crestPool.push({ m, t: 1, life: 0.5, r0: 1, r1: 8, y0: 0.12, y1: 1.5 });
+}
+function crest(o) {
+  let s = crestPool.find((p) => p.t >= 1);
+  if (!s) s = crestPool[0];
+  s.t = 0;
+  s.life = o.life == null ? 0.5 : o.life;
+  s.r0 = o.r0 == null ? 0.6 : o.r0;
+  s.r1 = o.r1 == null ? 8 : o.r1;
+  s.y0 = o.y0 == null ? 0.12 : o.y0;
+  s.y1 = o.y1 == null ? 1.4 : o.y1;
+  s.m.material.color.set(o.color == null ? 0xffffff : o.color);
+  s.m.position.set(o.x || 0, s.y0, o.z || 0);
+  s.m.visible = true;
+  return s;
+}
+function updateCrests(dt) {
+  for (const s of crestPool) {
+    if (s.t >= 1) { if (s.m.visible) s.m.visible = false; continue; }
+    s.t = Math.min(1, s.t + dt / s.life);
+    const e = 1 - (1 - s.t) ** 2;
+    const r = s.r0 + (s.r1 - s.r0) * e;
+    /* Scaled in x/y and again in the torus's own axis: the wall widens *and*
+       climbs as it runs out, which is what a real pressure wave looks like. */
+    s.m.scale.set(r, r, 1 + e * 0.9);
+    s.m.position.y = s.y0 + (s.y1 - s.y0) * e;
+    s.m.material.opacity = (1 - s.t) ** 1.4 * 0.5;
+  }
+}
+
+/* ---- the three impacts, each with its own signature ---------------------- */
+/* Quick slash: a hard point flash, a white core, and blue sparks thrown wide.
+   The light peaks are deliberately local: a light this bright already out-shines
+   every standing light in the arena (see lighting), and going far past that does
+   not read as a harder hit — the HDR value simply paints the whole floor white
+   and the bloom pass turns it into a screen-wide haze. */
+function slashImpact(pos, color, big) {
+  impactLight({ x: pos.x, y: pos.y, z: pos.z, color, power: big ? 30 : 18,
+    life: big ? 0.22 : 0.14, distance: big ? 12 : 10 });
+  burst({ x: pos.x, y: pos.y, z: pos.z, count: big ? 18 : 10, color: 0xffffff,
+    speed: big ? 15 : 11, spread: 1, size: big ? 0.3 : 0.2, life: 0.22, grav: -3, drag: 3.6 });
+  burst({ x: pos.x, y: pos.y, z: pos.z, count: big ? 36 : 22, color: 0xd8f6ff,
+    speed: big ? 12 : 8.5, spread: 1, size: big ? 0.2 : 0.14, life: 0.36, grav: -6, drag: 2.4 });
+  burst({ x: pos.x, y: pos.y, z: pos.z, count: big ? 18 : 10, color,
+    speed: big ? 8 : 6, spread: 1, size: 0.18, life: 0.42, grav: -4, drag: 2 });
+}
+/* Heavy strike: the floor itself gives way, and the air is full of debris.
+   The floor ring is not repeated here — `hitSpark` already lays one down at the
+   point of contact — so the blow's own signature is two rims and the light.
+   They are built from *rims* (the crest torus) rather than rings: the ring pool
+   draws a filled additive annulus 42% of its radius thick, so a ring at this
+   size is a bright sheet of floor rather than a front. Its area grows with the
+   square of the radius, and the bloom pass smears all of it over the arena,
+   while a rim costs a fraction of that light and reads better — a wave *is* an
+   edge. Measured on the frame the blow is held on, dropping the wide rings took
+   the clipped share of the picture from 0.60 to 0.39. */
+function shockwave(x, z, color, power) {
+  const p = power == null ? 1 : power;
+  crest({ x, z, color, r0: 0.7, r1: 6.2 * p, life: 0.55, y0: 0.1, y1: 1.6 });
+  crest({ x, z, color, r0: 0.6, r1: 3.8 * p, life: 0.45, y0: 1.1, y1: 1.9 });
+  impactLight({ x, y: 0.5, z, color, power: 28 * p, life: 0.26, distance: 12 });
+  for (let i = 0; i < 3; i++) {
+    burst({ x: x + (Math.random() - 0.5) * 2.2, y: 0.12, z: z + (Math.random() - 0.5) * 2.2,
+      count: 14, color: i === 1 ? 0x8c7458 : 0x6d5a44, speed: 5 + Math.random() * 3.5,
+      spread: 1, size: 0.36, life: 0.75 + Math.random() * 0.4, grav: -9, drag: 1.3, up: 1.15 });
+  }
+}
+/* Magic bolt: a layered detonation — flash, shockwave, and motes that keep
+   burning in the air for a beat after the bang. The lingering layer is kept
+   short and narrow on purpose: it is the one that stacks on top of whatever
+   else is happening, and a cloud of additive motes is the same screen-wide
+   haze as a wide ring, only slower to clear. */
+function magicExplosion(pos, color) {
+  impactLight({ x: pos.x, y: pos.y, z: pos.z, color: 0xffffff, power: 40, life: 0.2, distance: 13 });
+  impactLight({ x: pos.x, y: pos.y, z: pos.z, color, power: 30, life: 0.36, distance: 12 });
+  ring({ x: pos.x, z: pos.z, y: pos.y, color, r0: 0.3, r1: 3.2, life: 0.4, tilt: 0 });
+  ring({ x: pos.x, z: pos.z, color: 0x9aa0a6, r0: 0.4, r1: 4.4, life: 0.55 });
+  crest({ x: pos.x, z: pos.z, color, r0: 0.6, r1: 5, life: 0.55, y0: pos.y * 0.4, y1: 0.9 });
+  crest({ x: pos.x, z: pos.z, color, r0: 0.7, r1: 3.6, life: 0.4, y0: pos.y, y1: pos.y + 0.8 });
+  arc({ x: pos.x, y: pos.y, z: pos.z, yaw: Math.random() * 6.28, r0: 0.7, r1: 3.4,
+    life: 0.3, flat: 0.35, color: 0xffffff });
+  burst({ x: pos.x, y: pos.y, z: pos.z, count: 32, color: 0xffffff, speed: 16,
+    spread: 1, size: 0.3, life: 0.3, grav: -2, drag: 3.2 });              // the flash
+  burst({ x: pos.x, y: pos.y, z: pos.z, count: 46, color, speed: 11, spread: 1,
+    size: 0.26, size1: 0.08, life: 0.85, grav: -2.4, drag: 1.7 });        // the blast
+  burst({ x: pos.x, y: pos.y, z: pos.z, count: 48, color, speed: 3.4, spread: 1,
+    size: 0.3, size1: 0.16, life: 1.4, grav: 0.5, drag: 0.8, up: 0.7 });  // what lingers
+  chromaHit(1, 0.2);
+  bloomPulse(0.26, 0.24);
+  flash(0.13);
+  shake(0.5);
 }
 
 /* ---- camera trauma, slow motion, hit-stop and screen flash --------------- */
@@ -804,12 +1053,36 @@ const hitStop = (t) => { hitstop = Math.max(hitstop, t); };
 const flash = (a) => { flashAmt = Math.max(flashAmt, a); };
 const vignette = (a) => { vigAmt = Math.max(vigAmt, a); };
 
+/* ---- the dials behind the "juice" ---------------------------------------- */
+/* Hit-stop is counted in *frames*, not seconds: three to five frames is what a
+   heavy blow feels like, and that has to mean the same thing on a 60Hz phone and
+   a 144Hz monitor. Everything else here is a screen effect, so it runs on real
+   time and keeps moving while the world is frozen. */
+let freezeLeft = 0, caAmt = 0, caHold = 0, bloomBoost = 0, bloomHold = 0;
+const camKickV = new THREE.Vector3();
+const _kv = new THREE.Vector3();
+const freeze = (n) => { freezeLeft = Math.max(freezeLeft, n); };
+const chromaHit = (amt, hold) => { caAmt = Math.max(caAmt, amt); caHold = Math.max(caHold, hold || 0); };
+const bloomPulse = (amt, hold) => { bloomBoost = Math.max(bloomBoost, amt); bloomHold = Math.max(bloomHold, hold || 0); };
+const camKick = (x, y, z) => { camKickV.x += x; camKickV.y += y; camKickV.z += z; };
+/* A kick *away* from the impact: the lens is shoved by the blow, not toward it. */
+const kickAway = (pos, power) => {
+  _kv.copy(camera.position).sub(pos);
+  _kv.y = 0;
+  if (_kv.lengthSq() < 1e-6) _kv.set(0, 0, 1);
+  _kv.normalize().multiplyScalar(power);
+  camKick(_kv.x, power * 0.32, _kv.z);
+};
+
 /* Gameplay runs on scaled time; screens and camera run on real time, so a
    slow-motion beat never stalls the interface or strands a white flash.
    The clamping matters more than it looks: a frame delta can arrive as zero or
    even negative (rAF timestamps may precede the clock read at start-up), and a
    negative dt would run every decay in this file backwards. */
 function scaledDt(raw) {
+  /* A hit-stop is a *freeze*: the world does not advance for these frames, while
+     the camera and the screen effects (which run on raw time) keep their life. */
+  if (freezeLeft > 0) { freezeLeft--; return 0; }
   if (scaleHold > 0) scaleHold -= raw; else scaleTarget = 1;
   let target = scaleTarget;
   if (hitstop > 0) { hitstop -= raw; target = 0.05; }
@@ -882,11 +1155,19 @@ function updateFx(dt, t, rt) {
   updateParticles(dt);
   updateEmbers(dt, t);
   updateBolts(dt);
+  updateImpacts(dt);
+  updateCrests(dt);
   updatePooled(dt, ringPool);
   updatePooled(dt, arcPool);
   updateNumbers(dt);
   updateTimers(dt);
-  /* These three are screen furniture, so they always run on real time. */
+  /* These are screen furniture, so they always run on real time — including
+     through a hit-stop, which is exactly when the flash matters most. */
+  if (caHold > 0) caHold -= rt; else caAmt = Math.max(0, caAmt - rt * 5.5);
+  chroma.enabled = caAmt > 0.003;
+  if (chroma.enabled) chroma.uniforms.uAmount.value = caAmt * 0.018;
+  if (bloomHold > 0) bloomHold -= rt; else bloomBoost = Math.max(0, bloomBoost - rt * 2.6);
+  bloom.strength = BLOOM_BASE + bloomBoost;
   trauma = Math.max(0, trauma - rt * 1.7);
   flashAmt = Math.max(0, flashAmt - rt * 4.5);
   flashEl.style.opacity = flashAmt > 0.003 ? String(Math.min(0.5, flashAmt)) : '0';
@@ -1104,19 +1385,39 @@ function capeUpdate(dt, t) {
    samples of the blade instead of spawning any geometry. Samples are taken in
    world space and aged out, so the ribbon keeps the arc the blade actually
    drew through the air. */
-const RIB_N = 16, RIB_LIFE = 0.22;
-const ribPos = new Float32Array(RIB_N * 2 * 3), ribCol = new Float32Array(RIB_N * 2 * 3);
-const ribGeo = new THREE.BufferGeometry();
-ribGeo.setAttribute('position', new THREE.BufferAttribute(ribPos, 3).setUsage(dyn));
-ribGeo.setAttribute('color', new THREE.BufferAttribute(ribCol, 3).setUsage(dyn));
-const ribIdx = [];
-for (let i = 0; i < RIB_N - 1; i++) { const a = i * 2; ribIdx.push(a, a + 1, a + 3, a, a + 3, a + 2); }
-ribGeo.setIndex(ribIdx);
-ribGeo.setDrawRange(0, 0);
-const ribbon = new THREE.Mesh(ribGeo, new THREE.MeshBasicMaterial({ vertexColors: true,
-  transparent: true, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, depthWrite: false }));
-ribbon.frustumCulled = false;
-scene.add(ribbon);
+const RIB_N = 20, RIB_LIFE = 0.26;
+/* Two tiers, fed by one sample list: the blade's own edge, and a wider, softer
+   ghost that lingers a little longer behind it. Because both read the same
+   samples, the ghost is always exactly the arc the blade really drew. The core
+   is deliberately over-bright (a colour above 1.0) so the bloom pass catches it
+   and the trail reads as light rather than as a translucent ribbon. */
+function ribBuffers(n) {
+  const pos = new Float32Array(n * 2 * 3), col = new Float32Array(n * 2 * 3);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3).setUsage(dyn));
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3).setUsage(dyn));
+  const idx = [];
+  for (let i = 0; i < n - 1; i++) { const a = i * 2; idx.push(a, a + 1, a + 3, a, a + 3, a + 2); }
+  geo.setIndex(idx);
+  geo.setDrawRange(0, 0);
+  return { geo, pos, col };
+}
+function ribMesh(b) {
+  const m = new THREE.Mesh(b.geo, new THREE.MeshBasicMaterial({ vertexColors: true,
+    transparent: true, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, depthWrite: false }));
+  m.frustumCulled = false;
+  scene.add(m);
+  return m;
+}
+const ribCore = ribBuffers(RIB_N), ribHalo = ribBuffers(RIB_N);
+const ribbon = ribMesh(ribCore);
+const ribbonHalo = ribMesh(ribHalo);
+/* out: how far past the blade's tip the tier extends. back: how far past the
+   hilt. power: how sharply the tail fades. gain: brightness (over 1 blooms). */
+const TRAIL = [
+  { b: ribCore, life: RIB_LIFE, out: 0, back: 0, power: 2.2, gain: 1.05 },
+  { b: ribHalo, life: RIB_LIFE * 1.7, out: 0.45, back: 0.8, power: 1.2, gain: 0.22 },
+];
 const ribPts = [];
 const ribA = new THREE.Vector3(), ribB = new THREE.Vector3();
 let ribTint = new THREE.Color(0x9ff0ff);
@@ -1127,26 +1428,35 @@ function ribbonUpdate(dt, from, to, tint) {
     /* Only accept a sample once the tip has moved: otherwise the strip
        collapses into a dot when the blade hangs still. */
     const last = ribPts[0];
-    if (!last || last.a.distanceToSquared(from) > 3e-4) {
+    if (!last || last.a.distanceToSquared(from) > 2e-4) {
       ribPts.unshift({ a: from.clone(), b: to.clone(), age: 0 });
       if (ribPts.length > RIB_N) ribPts.length = RIB_N;
     }
   }
   for (const p of ribPts) p.age += dt;
-  while (ribPts.length && ribPts[ribPts.length - 1].age > RIB_LIFE) ribPts.pop();
+  const longest = TRAIL[1].life;
+  while (ribPts.length && ribPts[ribPts.length - 1].age > longest) ribPts.pop();
   const n = ribPts.length;
-  if (n < 2) { ribGeo.setDrawRange(0, 0); return; }
-  for (let i = 0; i < n; i++) {
-    const p = ribPts[i], i6 = i * 6;
-    ribPos[i6] = p.a.x; ribPos[i6 + 1] = p.a.y; ribPos[i6 + 2] = p.a.z;
-    ribPos[i6 + 3] = p.b.x; ribPos[i6 + 4] = p.b.y; ribPos[i6 + 5] = p.b.z;
-    const f = Math.max(0, 1 - p.age / RIB_LIFE) ** 1.7;
-    ribCol[i6] = ribTint.r * f; ribCol[i6 + 1] = ribTint.g * f; ribCol[i6 + 2] = ribTint.b * f;
-    ribCol[i6 + 3] = ribCol[i6] * 0.55; ribCol[i6 + 4] = ribCol[i6 + 1] * 0.55; ribCol[i6 + 5] = ribCol[i6 + 2] * 0.55;
+  for (const tier of TRAIL) {
+    const { geo, pos, col } = tier.b;
+    if (n < 2) { if (geo.drawRange.count !== 0) geo.setDrawRange(0, 0); continue; }
+    for (let i = 0; i < n; i++) {
+      const p = ribPts[i], i6 = i * 6;
+      const dx = p.a.x - p.b.x, dy = p.a.y - p.b.y, dz = p.a.z - p.b.z;
+      pos[i6] = p.a.x + dx * tier.out;
+      pos[i6 + 1] = p.a.y + dy * tier.out;
+      pos[i6 + 2] = p.a.z + dz * tier.out;
+      pos[i6 + 3] = p.b.x - dx * tier.back;
+      pos[i6 + 4] = p.b.y - dy * tier.back;
+      pos[i6 + 5] = p.b.z - dz * tier.back;
+      const f = Math.max(0, 1 - p.age / tier.life) ** tier.power * tier.gain;
+      col[i6] = ribTint.r * f; col[i6 + 1] = ribTint.g * f; col[i6 + 2] = ribTint.b * f;
+      col[i6 + 3] = col[i6] * 0.5; col[i6 + 4] = col[i6 + 1] * 0.5; col[i6 + 5] = col[i6 + 2] * 0.5;
+    }
+    geo.attributes.position.needsUpdate = true;
+    geo.attributes.color.needsUpdate = true;
+    geo.setDrawRange(0, (n - 1) * 6);
   }
-  ribGeo.attributes.position.needsUpdate = true;
-  ribGeo.attributes.color.needsUpdate = true;
-  ribGeo.setDrawRange(0, (n - 1) * 6);
 }
 
 /* ================================ the boss ================================ */
@@ -1162,8 +1472,13 @@ scene.add(B.group);
 const BX = 0, BZ = CFG.bz, BS = 1.16;      // BS: big enough to loom over him
 
 /* Limbs hang *outside* the torso silhouette — arms hidden inside a chest read
-   as a shapeless blob no matter how good the lighting is. */
-function bossLimb(side, y, w, skin, hot) {
+   as a shapeless blob no matter how good the lighting is.
+   They are also the one part of the boss a photo never touches: each limb is
+   its own mesh with its own materials, so the torso picture cannot reach it.
+   Deliberately the loudest thing on the body — a dark shell with a hot light
+   inside, plus a charge shell and a point light at the fist that the attack
+   telegraph drives. If you can see the fist glow, you can read the side. */
+function bossLimb(side, y, w, skin, hot, glowColor) {
   const g = new THREE.Group();
   const upper = mesh(new THREE.CylinderGeometry(w, w * 0.78, 0.92, 6), skin);
   upper.position.y = -0.46;
@@ -1171,11 +1486,22 @@ function bossLimb(side, y, w, skin, hot) {
   fore.position.y = -1.36;
   const hand = mesh(new THREE.IcosahedronGeometry(w * 1.05, 0), hot);
   hand.position.y = -1.88;
-  g.add(upper, fore, hand);
+  /* A shell that swells around the fist while the blow charges up. */
+  const shell = new THREE.Mesh(new THREE.IcosahedronGeometry(w * 2.2, 1),
+    new THREE.MeshBasicMaterial({ color: glowColor, transparent: true, opacity: 0,
+      blending: THREE.AdditiveBlending, depthWrite: false }));
+  shell.position.y = -1.88;
+  shell.visible = false;
+  const light = new THREE.PointLight(glowColor, 0, 9, 2);
+  light.position.y = -1.88;
+  g.add(upper, fore, hand, shell, light);
   g.position.set(side * 1.26, y, 0.12);
   g.rotation.set(-0.1, 0, -0.26 * side);
   B.group.add(g);
-  return { g, hand };
+  /* The base emissive of each material, so the telegraph ramps from the real
+     resting value instead of a number typed twice. */
+  return { g, hand, shell, light, mats: [skin, hot],
+    base: [skin.emissiveIntensity, hot.emissiveIntensity], side };
 }
 function bossLeg(side, skin, hot) {
   const thigh = mesh(new THREE.CylinderGeometry(0.34, 0.27, 0.95, 6), skin);
@@ -1208,6 +1534,13 @@ function buildDemon() {
   const eyeM = new THREE.MeshStandardMaterial({ color: 0x2a0000, emissive: 0xff2a00, emissiveIntensity: 6 });
   const flameM = new THREE.MeshBasicMaterial({ color: 0xff6a12, transparent: true, opacity: 0.13,
     blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+  /* Arms and fists: molten rock cracked open over a glowing core. Kept apart
+     from the body material on purpose — the fists are the tell, and a photo on
+     the chest must never be able to hide them. */
+  const limbSkin = new THREE.MeshStandardMaterial({ color: 0x140407, emissive: 0xb32a04,
+    emissiveIntensity: 0.62, roughness: 0.78, metalness: 0.24, flatShading: true });
+  const limbHot = new THREE.MeshStandardMaterial({ color: 0x2b0a02, emissive: 0xff8a1c,
+    emissiveIntensity: 2.5, roughness: 0.42, metalness: 0.3, flatShading: true });
 
   bossLeg(-1, skin, hot); bossLeg(1, skin, hot);
   const torso = mesh(new THREE.IcosahedronGeometry(0.95, 1), skin);
@@ -1251,9 +1584,9 @@ function buildDemon() {
   }
   spikes(3, 0.17, 0.66, hot, -1.22, 2.62, 0, 1);
   spikes(3, 0.17, 0.66, hot, 1.22, 2.62, 0, 1);
-  B.parts.armL = bossLimb(-1, 2.46, 0.22, skin, hot);
-  B.parts.armR = bossLimb(1, 2.46, 0.22, skin, hot);
-  B.parts.head = head; B.parts.torso = torso;
+  B.parts.armL = bossLimb(-1, 2.46, 0.22, limbSkin, limbHot, 0xff7a1e);
+  B.parts.armR = bossLimb(1, 2.46, 0.22, limbSkin, limbHot, 0xff7a1e);
+  B.parts.head = head; B.parts.torso = torso; B.parts.skin = skin;
   B.core = ribs;
   B.parts.claw = hot;
   B.flameM = flameM;
@@ -1266,6 +1599,14 @@ function buildIce() {
     emissiveIntensity: 0.7, roughness: 0.05, metalness: 0.5, flatShading: true,
     envMapIntensity: 1.7, transparent: true, opacity: 0.93 });
   const eyeM = new THREE.MeshStandardMaterial({ color: 0x0a2233, emissive: 0x9fe8ff, emissiveIntensity: 3.4 });
+  /* Arms and fists: shadowy silhouette with ice light burning inside it. Same
+     reasoning as the demon's — the limbs are the read, so they never share the
+     body's material (and never wear the photo). */
+  const limbSkin = new THREE.MeshStandardMaterial({ color: 0x061019, emissive: 0x2a7dff,
+    emissiveIntensity: 0.8, roughness: 0.2, metalness: 0.42, flatShading: true });
+  const limbHot = new THREE.MeshStandardMaterial({ color: 0x123449, emissive: 0x9fe8ff,
+    emissiveIntensity: 3.1, roughness: 0.06, metalness: 0.5, flatShading: true,
+    transparent: true, opacity: 0.95 });
 
   bossLeg(-1, skin, glass); bossLeg(1, skin, glass);
   const torso = mesh(new THREE.OctahedronGeometry(1.06, 0), skin);
@@ -1309,9 +1650,9 @@ function buildIce() {
   }
   spikes(3, 0.2, 0.76, glass, -1.22, 2.66, 0, 1);
   spikes(3, 0.2, 0.76, glass, 1.22, 2.66, 0, 1);
-  B.parts.armL = bossLimb(-1, 2.46, 0.24, skin, glass);
-  B.parts.armR = bossLimb(1, 2.46, 0.24, skin, glass);
-  B.parts.head = head; B.parts.torso = torso;
+  B.parts.armL = bossLimb(-1, 2.46, 0.24, limbSkin, limbHot, 0x9fe8ff);
+  B.parts.armR = bossLimb(1, 2.46, 0.24, limbSkin, limbHot, 0x9fe8ff);
+  B.parts.head = head; B.parts.torso = torso; B.parts.skin = skin;
   B.core = core;
   B.parts.claw = glass;
 }
@@ -1323,7 +1664,238 @@ function clearBoss() {
   });
   B.group.clear();
   B.flames = []; B.shards = []; B.parts = {}; B.eyes = null; B.core = null;
+  /* The portrait belongs to the player, not to the boss wearing it: the texture
+     stays on the GPU across waves and only the per-boss material and its little
+     frame are let go. (Disposing a material never touches its texture.) */
+  PHOTO.torsoMat = null; PHOTO.frame = null;
 }
+/* ========================= boss photo (your face) ======================== */
+/* The uploaded picture is a *decal*, not a texture swap.
+ 
+   Why: both bosses are polyhedra. Their built-in UVs are a spherical after-
+   thought — dropping a face onto them smears it round the ribs and the back.
+   So instead of trusting the UVs, a dedicated torso material projects the photo
+   from the front in the shader: local x/y are normalised over the torso's own
+   bounding box, an elliptical mask centred on the chest fades it into the skin,
+   and a normal test keeps it off the back.
+ 
+   The head, the legs and above all the arms and fists are separate meshes with
+   separate materials, so the picture physically cannot reach them: the wind-up
+   stays readable with or without a photo. */
+const PHOTO = {
+  on: false, name: '', w: 0, h: 0,
+  tex: null, thumb: '',
+  /* One set of uniform *objects*, shared by every torso material built from
+     here on, so switching a photo on is a single assignment. */
+  u: {
+    photo: { value: null },
+    has: { value: 0 },
+    min: { value: new THREE.Vector2(-1, -1) },
+    size: { value: new THREE.Vector2(2, 2) },
+    gain: { value: 1.16 },
+  },
+  torsoMat: null, frame: null,
+};
+/* A 1x1 white pixel: the sampler must always have something bound, so the
+   shader compiles once and only the `has` uniform ever changes. */
+PHOTO.u.photo.value = (() => {
+  const c = document.createElement('canvas');
+  c.width = c.height = 1;
+  const g = c.getContext('2d');
+  g.fillStyle = '#fff'; g.fillRect(0, 0, 1, 1);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.NoColorSpace;         // sampled raw; the shader decodes
+  return t;
+})();
+
+/* The torso material patch. Kept outside the material factory so the injected
+   GLSL is written down exactly once, with the uniforms handed in by reference
+   (sharing the objects — not the values — is what makes one upload update every
+   torso at once). */
+const PHOTO_GLSL = `
+  {
+    vec2 puv = (vBossLocal.xy - uPhotoMin) / uPhotoSize;
+    puv.y = 1.0 - puv.y;                                  // local +y is up, v is not
+    float front = smoothstep(0.02, 0.42, vBossLocal.z);   // local +z faces the player
+    vec2 d = (puv - vec2(0.5, 0.52)) / vec2(0.54, 0.56);
+    float ell = 1.0 - smoothstep(0.84, 1.02, length(d));  // a crisp oval, softly feathered
+    float m = uPhotoHas * front * ell * 0.97;
+    vec3 shot = texture2D(uPhoto, puv).rgb;
+    vec3 lin = mix(shot / 12.92, pow((shot + 0.055) / 1.055, vec3(2.4)), step(0.04045, shot));
+    /* Mixed in *after* the lighting: the portrait behaves like a lit panel on
+       the chest rather than a diffuse map, which is the only way it stays
+       legible on a body standing in a near-black arena. */
+    gl_FragColor.rgb = mix(gl_FragColor.rgb, lin * uPhotoGain, m);
+    gl_FragColor.rgb += lin * m * 0.03;                   // a hint of self-light, for the bloom
+  }`;
+function patchTorso(shader) {
+  shader.uniforms.uPhoto = PHOTO.u.photo;
+  shader.uniforms.uPhotoHas = PHOTO.u.has;
+  shader.uniforms.uPhotoMin = PHOTO.u.min;
+  shader.uniforms.uPhotoSize = PHOTO.u.size;
+  shader.uniforms.uPhotoGain = PHOTO.u.gain;
+  shader.vertexShader = shader.vertexShader
+    .replace('#include <common>', '#include <common>\nvarying vec3 vBossLocal;')
+    .replace('#include <begin_vertex>', '#include <begin_vertex>\nvBossLocal = position;');
+  shader.fragmentShader = shader.fragmentShader
+    .replace('#include <common>', `#include <common>
+      varying vec3 vBossLocal;
+      uniform sampler2D uPhoto; uniform float uPhotoHas;
+      uniform vec2 uPhotoMin; uniform vec2 uPhotoSize; uniform float uPhotoGain;`)
+    .replace(/#include <(opaque|output)_fragment>/, (m) => m + PHOTO_GLSL);
+}
+/* Cover-crop into a 4:5 portrait, so a landscape photo, a square one and a
+   sticker all land on the chest the same way. 512x640 is plenty for a chest and
+   small enough that a 12MP phone shot costs nothing to upload. */
+function cropToPortrait(src) {
+  const W = 512, H = 640;
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  const sw = src.naturalWidth || src.width, sh = src.naturalHeight || src.height;
+  const k = Math.max(W / sw, H / sh);
+  const dw = sw * k, dh = sh * k;
+  g.drawImage(src, (W - dw) / 2, (H - dh) / 2, dw, dh);
+  return c;
+}
+function thumbFrom(canvas) {
+  const w = 48, h = 60;
+  const t = document.createElement('canvas');
+  t.width = w; t.height = h;
+  t.getContext('2d').drawImage(canvas, 0, 0, w, h);
+  return t.toDataURL('image/jpeg', 0.72);
+}
+/* The material the torso wears when a photo is on: a clone of the boss's own
+   skin, so it keeps that boss's rock/ice shading and only gains the portrait. */
+function torsoWithPhoto(skin) {
+  const torso = B.parts.torso;
+  torso.geometry.computeBoundingBox();
+  const bb = torso.geometry.boundingBox;
+  PHOTO.u.min.value.set(bb.min.x, bb.min.y);
+  PHOTO.u.size.value.set(bb.max.x - bb.min.x, bb.max.y - bb.min.y);
+  const m = skin.clone();
+  m.userData.photo = true;
+  m.onBeforeCompile = patchTorso;
+  return m;
+}
+
+/* Called on every spawn so the portrait survives a wave change, and on every
+   upload so it lands mid-fight without waiting for the next boss. */
+function applyPhotoToBoss() {
+  const torso = B.parts.torso, skin = B.parts.skin;
+  if (!torso || !skin) return;
+  if (PHOTO.torsoMat && PHOTO.torsoMat !== torso.material) PHOTO.torsoMat.dispose();
+  PHOTO.torsoMat = PHOTO.on ? torsoWithPhoto(skin) : skin;
+  torso.material = PHOTO.torsoMat;
+  /* A locket of light drawn round the portrait: it reads as deliberate the
+     moment the picture appears, and it is what the bloom pass gets to chew on. */
+  if (PHOTO.frame && PHOTO.frame.parent) PHOTO.frame.parent.remove(PHOTO.frame);
+  PHOTO.frame = null;
+  if (!PHOTO.on) return;
+  const col = B.def && B.def.id === 'ice' ? 0x9fe8ff : 0xffb066;
+  const frame = new THREE.Mesh(new THREE.TorusGeometry(0.66, 0.026, 6, 44),
+    new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.5,
+      blending: THREE.AdditiveBlending, depthWrite: false }));
+  frame.position.set(0, -0.02, 0.66);
+  frame.scale.set(1, 1.16, 1);
+  torso.add(frame);
+  PHOTO.frame = frame;
+}
+const photoApplied = () => !!(PHOTO.torsoMat && PHOTO.torsoMat.userData.photo);
+function usePhotoSource(src, name) {
+  const canvas = cropToPortrait(src);
+  if (!PHOTO.tex) {
+    PHOTO.tex = new THREE.CanvasTexture(canvas);
+    PHOTO.tex.colorSpace = THREE.NoColorSpace;   // the shader does the sRGB decode
+    PHOTO.tex.anisotropy = 4;
+    PHOTO.u.photo.value = PHOTO.tex;
+  } else {
+    PHOTO.tex.image = canvas;                    // same texture object: no GPU churn
+    PHOTO.tex.needsUpdate = true;
+  }
+  PHOTO.on = true;
+  PHOTO.name = String(name || 'photo');
+  PHOTO.w = src.naturalWidth || src.width;
+  PHOTO.h = src.naturalHeight || src.height;
+  PHOTO.thumb = thumbFrom(canvas);
+  PHOTO.u.has.value = 1;
+  if (!B.dead) applyPhotoToBoss();               // live swap, mid-fight
+  photoPaint();
+  banner('BOSS PHOTO', PHOTO.name.toUpperCase().slice(0, 20) + ' · ON THE TORSO', 'wave', 1500);
+  AUDIO.play('ui', {});
+  return true;
+}
+function loadDataURL(url, name) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve(usePhotoSource(img, name));
+    img.onerror = () => { photoPaint('that file is not an image'); resolve(false); };
+    img.src = url;
+  });
+}
+function loadFile(file) {
+  if (!file) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(loadDataURL(String(fr.result), file.name.replace(/\.[a-z0-9]+$/i, '')));
+    fr.onerror = () => { photoPaint('could not read that file'); resolve(false); };
+    fr.readAsDataURL(file);
+  });
+}
+function clearPhoto() {
+  PHOTO.on = false;
+  PHOTO.u.has.value = 0;
+  PHOTO.thumb = '';
+  PHOTO.name = '';
+  if (B.parts.torso && PHOTO.torsoMat && PHOTO.torsoMat !== B.parts.skin) {
+    B.parts.torso.material = B.parts.skin;
+    PHOTO.torsoMat.dispose();
+  }
+  PHOTO.torsoMat = null;
+  if (PHOTO.frame && PHOTO.frame.parent) PHOTO.frame.parent.remove(PHOTO.frame);
+  PHOTO.frame = null;
+  photoPaint();
+  AUDIO.play('ui', {});
+}
+
+/* ---- the control --------------------------------------------------------- */
+const photoBtn = document.getElementById('photoBtn');
+const photoX = document.getElementById('photoX');
+const photoFile = document.getElementById('photoFile');
+const photoThumb = document.getElementById('photoThumb');
+let photoMsg = '';
+function photoPaint(err) {
+  if (err) photoMsg = err;
+  photoBtn.classList.toggle('idle', !PHOTO.on);
+  photoBtn.classList.toggle('on', PHOTO.on);
+  photoBtn.title = PHOTO.on
+    ? PHOTO.name + ' (' + PHOTO.w + '×' + PHOTO.h + ') — click to replace, or drop another image'
+    : 'Put a photo on the boss — arms and fists stay clear, the telegraph stays readable';
+  photoX.hidden = !PHOTO.on;
+  photoThumb.hidden = !PHOTO.on;
+  if (PHOTO.on) photoThumb.src = PHOTO.thumb; else photoThumb.removeAttribute('src');
+  if (photoMsg) { photoBtn.title = photoMsg; photoMsg = ''; }
+}
+/* These are controls, not part of the ring: without stopPropagation a click on
+   the upload button would also count as the tap that restarts a lost run. */
+photoBtn.addEventListener('pointerdown', (e) => {
+  e.preventDefault(); e.stopPropagation(); photoFile.click();
+});
+photoX.addEventListener('pointerdown', (e) => {
+  e.preventDefault(); e.stopPropagation(); clearPhoto();
+});
+photoFile.addEventListener('change', () => { loadFile(photoFile.files[0]); photoFile.value = ''; });
+/* Drag a picture straight onto the arena. */
+addEventListener('dragover', (e) => { e.preventDefault(); document.body.classList.add('dragging'); });
+addEventListener('dragleave', () => document.body.classList.remove('dragging'));
+addEventListener('drop', (e) => {
+  e.preventDefault();
+  document.body.classList.remove('dragging');
+  const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+  if (f && /^image\//.test(f.type)) loadFile(f);
+});
+photoPaint();
+
 function spawnBoss(plan) {
   clearBoss();
   B.def = plan.def; B.plan = plan; B.hp = plan.hp; B.maxHp = plan.hp;
@@ -1333,6 +1905,7 @@ function spawnBoss(plan) {
   B.group.rotation.set(0, 0, 0);
   B.group.scale.setScalar(0.001);
   if (plan.def.id === 'demon') buildDemon(); else buildIce();
+  applyPhotoToBoss();                 // the portrait outlives the boss wearing it
   const warm = plan.def.id === 'demon' ? 0xff6a12 : 0x7fd8ff;
   ring({ x: BX, z: BZ, color: warm, r0: 0.4, r1: 7, life: 0.85 });
   burst({ x: BX, y: 0.4, z: BZ, count: 46, color: warm, speed: 6, spread: 1,
@@ -1445,6 +2018,36 @@ function bossStrikeFx(side, isIce) {
   hitStop(0.05);
 }
 
+/* ---- the charging fist ---------------------------------------------------- */
+/* One function ramps any limb from cold to fully charged. `charge` is the
+   telegraph's own progress, so the fist heats exactly as fast as the countdown
+   the warning zone is drawing, and the side that is about to swing is the side
+   that is glowing. The arm holding the photo's torso is never involved. */
+const tmpHand = new THREE.Vector3();
+function limbCharge(limb, charge, dt) {
+  const u = LOGIC.clamp(charge, 0, 1);
+  const a = limb.mats[0], b = limb.mats[1];
+  /* Deliberately restrained: the shell and the fist light do the shouting, and
+     the body itself stays below the point where the bloom eats the silhouette. */
+  a.emissiveIntensity = LOGIC.damp(a.emissiveIntensity, limb.base[0] + u * 1.1, 12, dt);
+  b.emissiveIntensity = LOGIC.damp(b.emissiveIntensity, limb.base[1] + u * 2.6, 14, dt);
+  limb.light.intensity = LOGIC.damp(limb.light.intensity, u * 26, 13, dt);
+  limb.shell.visible = u > 0.02;
+  if (!limb.shell.visible) return;
+  limb.shell.material.opacity = 0.09 + u * 0.5;
+  limb.shell.scale.setScalar(0.6 + u * 0.62);
+  limb.shell.rotation.y += dt * 2.6;
+  limb.shell.rotation.x += dt * 1.4;
+}
+/* Sparks off the knuckles while it charges: the tell you can see from the far
+   side of the ring, in the corner of your eye, without reading anything. */
+function limbSparks(limb, charge, color) {
+  if (charge < 0.22 || Math.random() > 0.7) return;
+  limb.hand.getWorldPosition(tmpHand);
+  burst({ x: tmpHand.x, y: tmpHand.y, z: tmpHand.z, count: 2, color,
+    speed: 1.5, spread: 0.6, size: 0.15, life: 0.34, grav: 1.1, drag: 2.2, up: 0.5 });
+}
+
 /* ---- the boss's frame ---------------------------------------------------- */
 /* One function drives both bosses: it advances the pure state machine, reacts
    to the events it emits, and animates the same part names regardless of which
@@ -1489,6 +2092,13 @@ function updateBoss(dt) {
       warnZone.visible = false;
       AUDIO.setHeat(heatOf(G.slain));
       bossStrikeFx(ev.side, B.def.id === 'ice');
+      /* A last flash off the fist that threw it, so the eye is carried from the
+         glow to the blow. */
+      const fist = ev.side === 'left' ? B.parts.armL : B.parts.armR;
+      fist.hand.getWorldPosition(tmpHand);
+      burst({ x: tmpHand.x, y: tmpHand.y, z: tmpHand.z, count: 24,
+        color: B.def.id === 'ice' ? 0xd6f6ff : 0xffd166, speed: 7.5, spread: 0.9,
+        size: 0.22, life: 0.42, grav: -3, drag: 1.9 });
       /* The whole game, right here: safe means the other half. */
       if (!LOGIC.isSafe(ev.side, P.side)) hurtPlayer(B.plan.dmg);
       else {
@@ -1523,6 +2133,16 @@ function updateBoss(dt) {
   const other = e.side === 'left' ? B.parts.armR.g : B.parts.armL.g;
   g.rotation.x = LOGIC.damp(g.rotation.x, arm, 15, dt);
   other.rotation.x = LOGIC.damp(other.rotation.x, arm * 0.25, 10, dt);
+  /* The fists are the tell: the armed arm heats up as the warning zone fills,
+     the other stays cold. This is the whole reason the photo is kept off the
+     limbs — you have to be able to read the side at a glance. */
+  const charge = e.phase === 'telegraph' ? LOGIC.telegraphT(e) : 0;
+  const glowCol = B.def.id === 'ice' ? 0x9fe8ff : 0xff8a2e;
+  limbCharge(B.parts.armL, e.side === 'left' ? charge : 0, dt);
+  limbCharge(B.parts.armR, e.side === 'right' ? charge : 0, dt);
+  const armed = e.side === 'left' ? B.parts.armL : B.parts.armR;
+  limbSparks(armed, charge, glowCol);
+  if (PHOTO.frame) PHOTO.frame.material.opacity = 0.42 + Math.sin(B.t * 2.4) * 0.12 + B.hitFlash * 0.3;
   const lean = e.phase === 'strike' ? 0.17 : (e.phase === 'telegraph' ? -0.09 : 0);
   B.group.rotation.x = LOGIC.damp(B.group.rotation.x, lean, 9, dt);
   /* A hit makes it flinch; a breather makes it breathe. */
@@ -1611,11 +2231,32 @@ function damageBoss(move, pos, tint) {
   dmgNumber({ x: pos.x, y: pos.y + 0.35, z: pos.z, value: r.amount, crit: r.crit, magic: move === 'bolt' });
   hudCombo(G.combo);
   hudBossHit();
-  if (r.crit || move === 'heavy') {
-    shake(move === 'heavy' ? 0.8 : 0.5);
-    slowmo(0.34, move === 'heavy' ? 0.34 : 0.22);   // the beat that sells a big hit
+  if (move === 'heavy') {
+    /* The weight of the whole move lives in these lines: a four-frame freeze, the
+       floor giving way under the boss, a shove on the lens, and the bloom opening
+       up for a beat. */
+    freeze(4);
+    shockwave(pos.x, pos.z, tint || 0xffd166, 1);
+    kickAway(pos, 0.42);
+    shake(1);
+    slowmo(0.34, 0.34);
+    bloomPulse(0.16, 0.24);
+    chromaHit(0.6, 0.12);
+    flash(0.11);
+    AUDIO.duck(0.5, 0.32);                          // make room for the crunch
+  } else if (move === 'bolt') {
+    freeze(2);
+    kickAway(pos, 0.2);
+    shake(0.42);
+    slowmo(0.5, 0.2);
+    AUDIO.duck(0.36, 0.26);
+  } else if (r.crit) {
+    shake(0.5);
+    slowmo(0.34, 0.22);                             // the beat that sells a big hit
+    bloomPulse(0.2, 0.22);
+    chromaHit(0.34, 0.1);
     flash(0.09);
-    AUDIO.duck(move === 'heavy' ? 0.5 : 0.36, 0.32);   // make room for the crunch
+    AUDIO.duck(0.36, 0.32);
   } else shake(0.19);
   if (B.hp <= 0) killBoss();
 }
@@ -1634,7 +2275,11 @@ function killBoss() {
   ring({ x: BX, z: BZ, color: col, r0: 0.5, r1: 13, life: 0.9 });
   ring({ x: BX, z: BZ, y: 1.4, color: 0xffffff, r0: 0.4, r1: 6, life: 0.6, tilt: 0 });
   shardsAt(BX, BZ, 12, col);
-  flash(0.34); shake(1.25); slowmo(0.22, 1.1); hitStop(0.09);
+  flash(0.34); shake(1.25); slowmo(0.22, 1.1); freeze(6);
+  shockwave(BX, BZ, col, 1.5);
+  bloomPulse(0.22, 0.3);
+  chromaHit(1, 0.24);
+  kickAway({ x: BX, y: 1.4, z: BZ }, 0.55);
   /* The biggest noise in the game, and the music steps right off the stage. */
   AUDIO.play('kill');
   AUDIO.duck(0.7, 1.1);
@@ -1758,7 +2403,7 @@ function resolveHit(name) {
     shardsAt(P.x * 0.5, CFG.pz - 1.7, 5, tint);
     burst({ x: P.x * 0.4, y: 0.1, z: CFG.pz - 1.7, count: 30, color: 0xffb347, speed: 8,
       spread: 1, size: 0.28, life: 0.7, grav: -6, drag: 1.4, up: 1.2 });
-    shake(0.4); hitStop(0.04);
+    shake(0.25);
   }
   damageBoss(name, _hit, tint);
 }
@@ -2410,6 +3055,10 @@ function updateCamera(dt, rt) {
     jz = (Math.random() - 0.5) * 0.45 * s;
   camera.position.set(Math.sin(camRig.theta) * camRig.dist + jx,
     camRig.height + jy, Math.cos(camRig.theta) * camRig.dist + jz);
+  /* A heavy blow does not just shake the lens, it shoves it: the kick is a
+     decaying offset pointing away from the impact, on top of the noise. */
+  camera.position.add(camKickV);
+  camKickV.multiplyScalar(Math.exp(-7.5 * dt));
   camera.lookAt(camRig.aim.x, camRig.aim.y + jy * 0.4, camRig.aim.z);
   camera.rotation.z += (Math.random() - 0.5) * 0.055 * s;
   camera.fov = LOGIC.damp(camera.fov, lensFov() + s * 4.5, 5, dt);
@@ -2501,6 +3150,134 @@ function nanScan() {
   });
   return { objects: count, nanObjects: bad };
 }
+/* A arbitrary rectangle of the framebuffer, in 0..1 screen coordinates measured
+   from the bottom-left — the unit readPixels already speaks. It is how "the
+   portrait landed on the chest and not on the head" becomes a measurement. */
+function rectProbe(nx, ny, nw, nh) {
+  const gl = renderer.getContext();
+  const W = gl.drawingBufferWidth, H = gl.drawingBufferHeight;
+  const x = Math.max(0, Math.min(W - 2, Math.floor(nx * W)));
+  const y = Math.max(0, Math.min(H - 2, Math.floor(ny * H)));
+  const w = Math.max(2, Math.min(W - x, Math.floor(nw * W)));
+  const h = Math.max(2, Math.min(H - y, Math.floor(nh * H)));
+  const buf = new Uint8Array(w * h * 4);
+  gl.readPixels(x, y, w, h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+  let sum = 0, sat = 0, bright = 0;
+  for (let i = 0; i < buf.length; i += 4) {
+    const r = buf[i] / 255, g = buf[i + 1] / 255, b = buf[i + 2] / 255;
+    const l = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    sum += l;
+    if (l > 0.6) bright++;
+    sat += Math.max(r, g, b) - Math.min(r, g, b);
+  }
+  const n = buf.length / 4;
+  return { x, y, w, h, meanLuma: +(sum / n).toFixed(4), meanSat: +(sat / n).toFixed(4),
+    brightFrac: +(bright / n).toFixed(4) };
+}
+/* Where a part of the model is on screen, in the same 0..1 units as rectProbe. */
+const _screenV = new THREE.Vector3();
+function screenOf(obj) {
+  obj.getWorldPosition(_screenV).project(camera);
+  return { x: _screenV.x * 0.5 + 0.5, y: _screenV.y * 0.5 + 0.5, onScreen: _screenV.z < 1 };
+}
+/* Two framebuffer snapshots and the story of what changed between them: the
+   honest way to answer "did the picture land on the torso, and nowhere else?".
+   The threshold is a per-pixel mean channel difference, so post-processing
+   shimmer is not mistaken for a change. */
+function snapshot() {
+  const gl = renderer.getContext();
+  const W = gl.drawingBufferWidth, H = gl.drawingBufferHeight;
+  const buf = new Uint8Array(W * H * 4);
+  gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+  return { W, H, buf };
+}
+/* How much *structure* the frame still has: the mean jump in luma between
+   neighbouring pixels. A white-out has none — every pixel holds the same value
+   — while a readable frame keeps the edges of the titan, the blade and the
+   floor lines. It is the measurement behind "can you actually see the fight".
+   Sampled every other pixel: the question is the average, not the last edge in
+   the corner, and a full frame is a million pixels. */
+function edgeProbe(region) {
+  const s = snapshot();
+  const r = region || { x: 0, y: 0, w: 1, h: 1 };
+  const x0 = Math.max(1, Math.floor(r.x * s.W)), x1 = Math.min(s.W - 1, Math.ceil((r.x + r.w) * s.W));
+  const y0 = Math.max(1, Math.floor(r.y * s.H)), y1 = Math.min(s.H - 1, Math.ceil((r.y + r.h) * s.H));
+  const lum = (x, y) => {
+    const i = (y * s.W + x) * 4;
+    return (0.2126 * s.buf[i] + 0.7152 * s.buf[i + 1] + 0.0722 * s.buf[i + 2]) / 255;
+  };
+  let sum = 0, n = 0;
+  for (let y = y0; y < y1; y += 2) {
+    for (let x = x0; x < x1; x += 2) {
+      sum += Math.abs(lum(x, y) - lum(x + 1, y)) + Math.abs(lum(x, y) - lum(x, y + 1));
+      n += 2;
+    }
+  }
+  return +(sum / n).toFixed(4);
+}
+function diffFrames(a, b, region, thresh) {
+  const W = Math.min(a.W, b.W), H = Math.min(a.H, b.H);
+  const t = thresh == null ? 6 : thresh;
+  const r = region || { x: 0, y: 0, w: 1, h: 1 };
+  const x0 = Math.max(0, Math.floor(r.x * W)), y0 = Math.max(0, Math.floor(r.y * H));
+  const x1 = Math.min(W, Math.ceil((r.x + r.w) * W)), y1 = Math.min(H, Math.ceil((r.y + r.h) * H));
+  let changed = 0, total = 0, sum = 0, bx0 = W, by0 = H, bx1 = -1, by1 = -1;
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const i = (y * W + x) * 4;
+      const d = (Math.abs(a.buf[i] - b.buf[i]) + Math.abs(a.buf[i + 1] - b.buf[i + 1]) +
+        Math.abs(a.buf[i + 2] - b.buf[i + 2])) / 3;
+      total++;
+      if (d > t) {
+        changed++; sum += d;
+        if (x < bx0) bx0 = x;
+        if (x > bx1) bx1 = x;
+        if (y < by0) by0 = y;
+        if (y > by1) by1 = y;
+      }
+    }
+  }
+  return { region: r, pixels: total, changed,
+    changedFrac: +(changed / Math.max(1, total)).toFixed(4),
+    meanDelta: +(sum / Math.max(1, changed)).toFixed(2),
+    box: bx1 < 0 ? null : { x: +(bx0 / W).toFixed(3), y: +(by0 / H).toFixed(3),
+      x1: +((bx1 + 1) / W).toFixed(3), y1: +((by1 + 1) / H).toFixed(3) } };
+}
+/* Every mesh in the scene that is wearing the photo, by material. If this ever
+   returns more than the torso, the feature has gone wrong. */
+function photoMeshes() {
+  const out = [];
+  scene.traverse((o) => {
+    if (o.isMesh && o.material && o.material.userData && o.material.userData.photo) out.push(o);
+  });
+  return out;
+}
+/* One snapshot of every effect system at this instant: what is alive, what is
+   still drawing, and where the screen dials are. A "juicy" frame is a set of
+   numbers, and this is the list of them. */
+function vfxLive() {
+  let alive = 0;
+  for (let i = 0; i < MAXP; i++) if (pLife[i] > 0) alive++;
+  let peak = 0;
+  for (const f of flashPool) peak = Math.max(peak, f.l.intensity);
+  return {
+    rings: ringPool.filter((r) => r.t < 1).length,
+    arcs: arcPool.filter((a) => a.t < 1).length,
+    crests: crestPool.filter((c) => c.t < 1).length,
+    flashes: flashPool.filter((f) => f.t < 1).length,
+    bolts: boltPool.filter((b) => b.t < 1).length,
+    trailSamples: ribPts.length,
+    trailCore: ribCore.geo.drawRange.count,
+    trailHalo: ribHalo.geo.drawRange.count,
+    particles: alive, particlesMax: MAXP, spawned: pCursor,
+    lightPeak: +peak.toFixed(1),
+    frozen: freezeLeft,
+    chroma: +caAmt.toFixed(3), chromaOn: chroma.enabled,
+    chromaAmount: +chroma.uniforms.uAmount.value.toFixed(5),
+    bloom: +bloom.strength.toFixed(3), bloomBase: BLOOM_BASE,
+    kick: +camKickV.length().toFixed(4),
+  };
+}
 function report(extra) {
   const info = renderer.info.render;
   const ns = nanScan();
@@ -2512,6 +3289,18 @@ function report(extra) {
     hits: G.hits, dodges: G.dodges, calls: info.calls, tris: info.triangles,
     objects: ns.objects, nanObjects: ns.nanObjects,
     timeScale: +timeScale.toFixed(2), avgMs: +avgMs.toFixed(2), errors: errs,
+    vfx: vfxLive(),
+    photo: {
+      on: PHOTO.on, name: PHOTO.name, source: PHOTO.w + 'x' + PHOTO.h,
+      texture: !!PHOTO.tex, uniform: PHOTO.u.has.value,
+      onTorso: photoApplied(),
+      torsoIsPhotoMat: !!PHOTO.torsoMat && PHOTO.torsoMat.userData.photo === true,
+      headPlain: !(B.parts.head && B.parts.head.material.map),
+      armPlain: !!(B.parts.armL && B.parts.armR
+        && !B.parts.armL.hand.material.map && !B.parts.armR.hand.material.map
+        && B.parts.armL.hand.material !== (B.parts.torso && B.parts.torso.material)),
+      frame: !!PHOTO.frame,
+    },
   }, extra || {});
   const txt = JSON.stringify(j);
   document.getElementById('probe').textContent = txt;
@@ -2526,7 +3315,20 @@ function report(extra) {
 window.__duel = {
   step, draw, LOGIC, CFG, CAP, errs, scene, renderer, bloom, B, P, G, camRig,
   warnZone, overEl, boot, spawnBoss, hudBoss, tryAttack, tryMove, newRun,
-  lumaProbe, nanScan, report, AUDIO, heatOf,
+  lumaProbe, nanScan, report, AUDIO, heatOf, rectProbe, screenOf, snapshot, diffFrames, edgeProbe, photoMeshes,
+  vfxLive,
+  /* Feature 2, reachable from a headless harness. */
+  vfx: { ringPool, arcPool, crestPool, flashPool, boltPool, TRAIL, ribbon, ribbonHalo,
+    chroma, bloom, live: vfxLive,
+    setFreeze: (n) => freeze(n), setChroma: (a) => chromaHit(a, 0), camKick },
+  /* Feature 1, reachable from a headless harness: no file dialog required. */
+  PHOTO, photo: {
+    use: usePhotoSource, loadFile, loadDataURL, clear: clearPhoto, applied: photoApplied,
+    state: () => ({ on: PHOTO.on, name: PHOTO.name, w: PHOTO.w, h: PHOTO.h,
+      uniform: PHOTO.u.has.value, onTorso: photoApplied(),
+      armMat: B.parts.armL ? (B.parts.armL.hand.material === B.parts.armL.mats[1]) : false,
+      limbBase: B.parts.armL ? B.parts.armL.base.slice() : null }),
+  },
   get avgMs() { return avgMs; },
   set avgMs(v) { avgMs = v; },
   get timeScale() { return timeScale; },

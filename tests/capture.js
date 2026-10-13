@@ -17,10 +17,11 @@
 /* ============================ capture driver ============================= */
 export function runCapture(A, mode) {
   /* Injected by index.html: the harness touches the game, never the reverse. */
-  const { step, draw, LOGIC, CFG, CAP, errs, scene, renderer, bloom, B, P, G, camRig, warnZone, overEl, boot, spawnBoss, hudBoss, tryAttack, tryMove, newRun, lumaProbe, nanScan, report } = A;
+  const { step, draw, LOGIC, CFG, CAP, errs, scene, renderer, bloom, B, P, G, camRig, warnZone, overEl, boot, spawnBoss, hudBoss, tryAttack, tryMove, newRun, lumaProbe, nanScan, report, rectProbe, screenOf, snapshot, diffFrames, edgeProbe, photoMeshes, vfx } = A;
   boot.style.display = 'none';
   const S = 1 / 60;
   const checks = [];
+  let fog = null;                                  // the worst frame of the autoplay minute
   const ok = (name, pass, detail) => checks.push({ name, pass: !!pass, detail: detail == null ? '' : String(detail) });
   const run = (sec) => { const n = Math.max(1, Math.round(sec / S)); for (let i = 0; i < n; i++) step(S); };
   const until = (fn, maxSec) => {
@@ -40,6 +41,10 @@ export function runCapture(A, mode) {
      sword makes a noise" become numbers, exactly like "it glows" did. */
   if (mode === 'audio') return audioProbe().catch((e) => report({
     checks, passed: 0, failed: 1, audioError: String((e && e.stack) || e) }));
+  /* Feature 1 is asynchronous by nature (FileReader, Image.decode), so it gets
+     its own async probe, exactly like the audio one. */
+  if (mode === 'photo') return photoProbe().catch((e) => report({
+    checks, passed: 0, failed: 1, photoError: String((e && e.stack) || e) }));
 
   async function audioProbe() {
     const AU = A.AUDIO;
@@ -179,6 +184,135 @@ export function runCapture(A, mode) {
     return true;
   }
 
+  /* ---- Feature 1: the photo lands on the torso, and only the torso --------- */
+  /* Everything here is measured, not described: the material identities, the
+     shader uniform, and the actual pixels of the chest, the head and an empty
+     patch of floor, before and after an upload. */
+  async function photoProbe() {
+    const AU = A.photo;                       // PHOTO itself: { on, u, tex, frame }
+    const at = (obj, w, h, dy) => {
+      const s = screenOf(obj);
+      return rectProbe(s.x - w / 2, s.y - h / 2 + (dy || 0), w, h);
+    };
+    run(0.8);                                 // the boss settles on stage
+    draw();
+    const torso0 = at(B.parts.torso, 0.09, 0.11);
+    const frame0 = snapshot();                // the whole picture, for the diff below
+
+    ok('no photo to start with', !AU.applied() && A.PHOTO.u.has.value === 0);
+    ok('the torso wears the boss\'s own skin', B.parts.torso.material === B.parts.skin);
+    ok('the fists already have their own material',
+      B.parts.armL.hand.material === B.parts.armL.mats[1] && B.parts.armL.mats[1] !== B.parts.skin);
+    const limbBase = B.parts.armL.base.slice();
+
+    /* A magenta field with a white bar across the middle: a hue neither boss
+       owns, so any change to the chest pixels is the photo and nothing else. */
+    const canvas = document.createElement('canvas');
+    canvas.width = 400; canvas.height = 300;
+    const g2 = canvas.getContext('2d');
+    g2.fillStyle = '#ff00c8'; g2.fillRect(0, 0, 400, 300);
+    g2.fillStyle = '#ffffff'; g2.fillRect(0, 130, 400, 40);
+
+    ok('the picture is accepted', AU.use(canvas, 'harness') === true);
+    /* Same frame, only the material changed: no camera drift and no pose drift,
+       so any change in the head's pixels could only mean the photo bled onto it.
+       (The simulation is deliberately not advanced between the two reads.) */
+    draw();
+
+    ok('the shader uniform is on the torso material', A.PHOTO.u.has.value === 1 && AU.applied());
+    ok('the torso now has a material of its own',
+      B.parts.torso.material !== B.parts.skin && B.parts.torso.material.userData.photo === true);
+    ok('the head keeps the plain skin', !B.parts.head.material.map &&
+      B.parts.head.material !== B.parts.torso.material, 'head mat has no map');
+    ok('the hands are untouched by the picture',
+      !B.parts.armL.hand.material.map && !B.parts.armR.hand.material.map &&
+      B.parts.armL.hand.material === B.parts.armL.mats[1] &&
+      B.parts.armL.hand.material !== B.parts.torso.material);
+    ok('the limbs keep their own colours', B.parts.armL.base.join() === limbBase.join(), limbBase.join('/'));
+    ok('a locket of light is drawn round the portrait', !!A.PHOTO.frame);
+
+    const torso1 = at(B.parts.torso, 0.09, 0.11);
+    const frame1 = snapshot();
+    const dTorso = Math.abs(torso1.meanLuma - torso0.meanLuma) + Math.abs(torso1.meanSat - torso0.meanSat);
+    ok('the chest really changed colour', dTorso > 0.05,
+      'luma ' + torso0.meanLuma + '→' + torso1.meanLuma + ', sat ' + torso0.meanSat + '→' + torso1.meanSat);
+    /* The airtight half: which meshes in the entire scene are wearing the photo.
+       It has to be one, and the head, both fists and both arms have to be absent
+       from that list — they are separate meshes with their own materials. */
+    const painted = photoMeshes();
+    ok('exactly one mesh in the scene carries the photo', painted.length === 1, 'meshes=' + painted.length);
+    ok('and it is the torso — not the head, not a fist',
+      painted[0] === B.parts.torso && painted.indexOf(B.parts.head) < 0 &&
+      painted.indexOf(B.parts.armL.hand) < 0 && painted.indexOf(B.parts.armR.hand) < 0 &&
+      painted.indexOf(B.parts.armL.g) < 0 && painted.indexOf(B.parts.armR.g) < 0,
+      'torso=' + (painted[0] === B.parts.torso));
+    /* And what the eye would see: the change is carried by the chest, and what
+       reaches the rest of the frame is only the bloom halo off it. */
+    const all = diffFrames(frame0, frame1);
+    const sc = screenOf(B.parts.torso);
+    const chestDiff = diffFrames(frame0, frame1, { x: sc.x - 0.045, y: sc.y - 0.055, w: 0.09, h: 0.11 });
+    const floorPatch = diffFrames(frame0, frame1, { x: 0, y: 0, w: 0.20, h: 0.40 });
+    const halo = diffFrames(frame0, frame1, { x: 0.78, y: 0.62, w: 0.22, h: 0.38 });
+    ok('the upload visibly changed the frame', all.changedFrac > 0.002 && all.changedFrac < 0.45,
+      'changed=' + all.changedFrac + ' of the frame, meanΔ=' + all.meanDelta);
+    ok('the chest carries the change', chestDiff.meanDelta > 20,
+      'meanΔ=' + chestDiff.meanDelta + ' over ' + chestDiff.changed + 'px');
+    ok('and several times more of it than the halo does', chestDiff.meanDelta > halo.meanDelta * 6,
+      'chestΔ=' + chestDiff.meanDelta + ' vs haloΔ=' + halo.meanDelta);
+    ok('the floor patch did not change at all', floorPatch.changed === 0,
+      'changed=' + floorPatch.changed + 'px of ' + floorPatch.pixels);
+    run(0.06);
+
+    /* The path a player actually takes: a File through FileReader. */
+    const blob = await new Promise((r) => canvas.toBlob(r, 'image/png'));
+    const file = new File([blob], 'harness-face.png', { type: 'image/png' });
+    ok('a real File loads through FileReader',
+      (await AU.loadFile(file)) === true && A.PHOTO.name === 'harness-face', 'name=' + A.PHOTO.name);
+    ok('the crop is a 4:5 portrait texture',
+      !!A.PHOTO.tex && A.PHOTO.tex.image.width === 512 && A.PHOTO.tex.image.height === 640,
+      A.PHOTO.tex ? A.PHOTO.tex.image.width + 'x' + A.PHOTO.tex.image.height : 'no texture');
+    ok('the source size is reported back', A.PHOTO.w === 400 && A.PHOTO.h === 300,
+      A.PHOTO.w + 'x' + A.PHOTO.h);
+    ok('a thumbnail is offered for the button', /^data:image\/jpeg/.test(A.PHOTO.thumb));
+
+    /* It has to survive the wave it is pinned to. */
+    const other = LOGIC.BOSSES[B.def.id === 'demon' ? 1 : 0];
+    G.state = 'fight';
+    const p2 = LOGIC.planFor(other, 1);
+    spawnBoss(p2); hudBoss(p2);
+    run(0.4); draw();
+    ok('the next boss wears the same photo',
+      AU.applied() && A.PHOTO.u.has.value === 1 && B.parts.torso.material.userData.photo === true &&
+      A.PHOTO.frame.parent === B.parts.torso, 'boss=' + B.def.id);
+    ok('and its arms are still bare',
+      !B.parts.armL.hand.material.map && B.parts.armL.hand.material !== B.parts.torso.material);
+    ok('the fists keep their molten colour on the new boss', B.parts.armL.base[1] > 1,
+      'hand emissive=' + B.parts.armL.base[1]);
+
+    A.photo.clear();
+    run(0.2); draw();
+    ok('removing the photo gives the skin back',
+      !AU.applied() && A.PHOTO.u.has.value === 0 &&
+      B.parts.torso.material === B.parts.skin && !A.PHOTO.frame);
+    ok('and nothing was left in a bad state', nanScan().nanObjects === 0 && errs.length === 0,
+      JSON.stringify(nanScan()) + ' ' + errs.join('|'));
+
+    /* Put it back on and stop there: the sweep photographs the tableau a mode
+       finishes on, and a boss wearing someone's face is the picture to look at. */
+    AU.use(canvas, 'harness-face');
+    run(0.15); draw();
+
+    report({ checks, passed: checks.filter((c) => c.pass).length,
+      failed: checks.filter((c) => !c.pass).length,
+      photo: { on: A.PHOTO.on, name: A.PHOTO.name, texture: !!A.PHOTO.tex,
+        crop: A.PHOTO.tex ? [A.PHOTO.tex.image.width, A.PHOTO.tex.image.height] : null,
+        chestLuma: [torso0.meanLuma, torso1.meanLuma], chestSat: [torso0.meanSat, torso1.meanSat],
+        chestDelta: chestDiff.meanDelta, haloDelta: halo.meanDelta,
+        changedFrac: all.changedFrac, box: all.box } });
+    requestAnimationFrame(function hold() { draw(); requestAnimationFrame(hold); });
+    return true;
+  }
+
   if (mode === 'idle') run(3.5);
 
   else if (mode === 'telegraph') {
@@ -261,16 +395,282 @@ export function runCapture(A, mode) {
        it is to run the whole machine — spawns, deaths, waves — for a minute
        without a crash, a NaN, or a stuck state. */
     const r = LOGIC.mulberry32(99);
+    /* One tableau is a single moment, and which moment it lands on depends on
+       the build's own timing — so a build that washes the screen out on every
+       second heavy hit would still pass a check that only ever looked at one
+       frame. The minute is sampled as it goes, every two seconds, and the
+       *median* of those thirty samples is what gets judged: that is the frame a
+       player mostly looks at. The 90th percentile and the worst frame are
+       reported beside it but not asserted on, because the two builds disagree
+       about them for a reason that is not pictures: a hit-stop holds the peak
+       frame on screen for two frames longer here, so a sampler that fires on a
+       fixed beat lands on a peak about three times as often in this build. The
+       money frame itself is held and measured in `vfx` mode, where the budget is
+       the pre-feature envelope. */
+    fog = { luma: 0, clip: 0, sat: 0, at: 0, clips: [] };
     for (let i = 0; i < 60 * 60 && G.state !== 'defeat'; i++) {
       if (B.st && B.st.phase === 'telegraph' && r() < 0.2) tryMove(B.st.side === 'left' ? 1 : -1);
       if (r() < 0.05) tryAttack('quick');
       if (r() < 0.008) tryAttack('heavy');
       if (r() < 0.012) tryAttack('bolt');
       step(S);
+      if (i % 120 === 0) {
+        draw();
+        const s = lumaProbe();
+        fog.clips.push(s.brightFrac);
+        /* Copy by hand: Object.assign(fog, s) would add a `brightFrac` key and
+           leave `clip` at zero, which is a check that can never fail. */
+        if (s.brightFrac > fog.clip) {
+          fog.luma = s.meanLuma; fog.clip = s.brightFrac; fog.sat = s.meanSat;
+          fog.at = +(i * S).toFixed(1);
+          /* What was on screen when it happened. A washout number on its own
+             says nothing about which effect owns it. */
+          const l = vfx && vfx.live ? vfx.live() : null;
+          if (l) fog.fx = [l.rings, l.crests, l.arcs, l.flashes, l.bolts, l.particles, l.lightPeak, l.bloom];
+        }
+      }
     }
+    const sorted = fog.clips.slice().sort((a, b) => a - b);
+    fog.p50 = sorted[Math.floor(sorted.length / 2)];
+    fog.p90 = sorted[Math.min(sorted.length - 1, Math.round(sorted.length * 0.9))];
+    fog.n = sorted.length;
     ok('a minute of play without a crash', errs.length === 0, errs.join('|'));
     ok('the machine kept running', G.t > 30, 't=' + G.t.toFixed(1));
+    ok('the ordinary frame in a minute of play stays out of the fog',
+      fog.p50 < 0.3, 'clipped: median ' + fog.p50 + ', 90th ' + fog.p90 +
+      ', worst ' + fog.clip + ' at ' + fog.at + 's of ' + fog.n + ' samples ' + JSON.stringify(fog.fx));
     ok('no NaN anywhere in the scene graph', nanScan().nanObjects === 0, JSON.stringify(nanScan()));
+  } else if (mode === 'arms') {
+    /* Feature 1, the other half: the wind-up stays readable because the fists
+       are their own material and the armed one charges as the countdown runs. */
+    toTelegraph();
+    const armed = B.st.side === 'left' ? B.parts.armL : B.parts.armR;
+    const idle = B.st.side === 'left' ? B.parts.armR : B.parts.armL;
+    run(0.75);
+    const u = LOGIC.telegraphT(B.st);
+    ok('the fist that is about to swing lights up', armed.light.intensity > 8,
+      'u=' + u.toFixed(2) + ' light=' + armed.light.intensity.toFixed(1));
+    ok('its knuckles burn above their resting glow',
+      armed.mats[1].emissiveIntensity > armed.base[1] + 0.5,
+      armed.base[1] + ' -> ' + armed.mats[1].emissiveIntensity.toFixed(2));
+    ok('the other fist stays cold', idle.light.intensity < armed.light.intensity * 0.25,
+      'idle=' + idle.light.intensity.toFixed(2));
+    ok('a charge shell swells round it', armed.shell.visible && armed.shell.material.opacity > 0.1,
+      'opacity=' + armed.shell.material.opacity.toFixed(2));
+    ok('the fists are never the torso material',
+      armed.hand.material !== B.parts.torso.material && !armed.hand.material.map);
+    const peak = armed.light.intensity;
+    until(() => B.st.phase === 'strike' || B.st.phase === 'recover', 4);
+    run(0.4);
+    ok('the glow dies down once the blow is thrown', armed.light.intensity < peak * 0.6,
+      peak.toFixed(1) + ' -> ' + armed.light.intensity.toFixed(1));
+  } else if (mode === 'vfx') {
+    /* Feature 2: the "juice". Every claim below is read off the effect systems
+       themselves — a trail with vertices in it, a hit-stop that really stops
+       game time, a light pool that empties itself again — so a regression cannot
+       hide behind a pretty frame. */
+    const V = A.vfx;
+    const live = () => V.live();
+    /* The arena is not silent at rest (embers, the entry flourish), so the
+       particle field is judged against the floor it idles at, not against zero. */
+    let floor = live().particles;
+    for (let i = 0; i < 72; i++) { step(S); floor = Math.max(floor, live().particles); }
+    const calls0 = renderer.info.render.calls;
+    P.hp = P.maxHp;
+    /* A yardstick for the two luma checks at the end of this mode: the arena at
+       rest, from this same camera, before any blow has been struck. */
+    draw();
+    const restLum = lumaProbe();
+    const restEdges = edgeProbe();
+
+    /* --- (1) the sword trail: the arc the blade really drew ---------------- */
+    tryAttack('quick');
+    const drew = until(() => live().trailSamples >= 4, 1);
+    const trail = live();
+    ok('a swing samples the blade into a trail', trail.trailSamples >= 4,
+      trail.trailSamples + ' samples after ' + drew.toFixed(2) + 's');
+    ok('both trail tiers have geometry to draw',
+      trail.trailCore >= 12 && trail.trailHalo >= 12,
+      'core=' + trail.trailCore + ' halo=' + trail.trailHalo + ' verts');
+
+    /* --- (2) the heavy blow: hit-stop, shockwave, aberration, bloom --------- */
+    until(() => live().flashes === 0, 1.5);        // let the slash flash die first
+    const before = live();
+    P.hp = P.maxHp;
+    tryAttack('heavy');
+    const landed = until(() => live().flashes > 0, 1.6);
+    const hit = live();                            // the impact frame itself
+    ok('the blow lands at the end of its wind-up', landed > 0.15 && landed < 1.2,
+      landed.toFixed(2) + 's after the press');
+    /* A hit-stop is counted in frames, so count them: while the world is held,
+       game time must not move at all. That is the difference between a freeze
+       and a merely heavier slow motion. */
+    const tA = G.t, held = [];
+    for (let i = 0; i < 8; i++) { const t0 = G.t; step(S); if (G.t === t0) held.push(i); }
+    ok('the blow stops the world dead for four frames', held.join() === '0,1,2,3',
+      'held frames ' + held.join() + ' of 8');
+    ok('and the world is stopped, not slowed', G.t - tA < 0.05,
+      'advanced ' + (G.t - tA).toFixed(4) + 's over 8 frames (0.133s would play)');
+    ok('a shockwave runs out across the floor', hit.rings >= 1 && hit.crests >= 2,
+      'rings=' + hit.rings + ' crests=' + hit.crests);
+    ok('the impact lights the arena', hit.lightPeak > 20, 'peak=' + hit.lightPeak);
+    ok('the strike throws up debris', hit.particles - before.particles > 80,
+      before.particles + ' -> ' + hit.particles + ' motes');
+    ok('the camera is shoved away from the blow', hit.kick > 0.1, 'kick=' + hit.kick);
+    ok('aberration is on at the moment of impact', hit.chromaOn && hit.chromaAmount > 0,
+      'amount=' + hit.chromaAmount);
+    ok('bloom opens up with the hit', hit.bloom > hit.bloomBase + 0.1,
+      'bloom ' + hit.bloomBase + ' -> ' + hit.bloom);
+
+    /* --- (3) the comet bolt: a tail in flight, a layered detonation -------- */
+    until(() => P.atk.name === null, 1.5);         // let the heavy swing finish
+    /* Wait for the stage to drain before the cast. The detonation below is found
+       by watching for the first crest, and a crest still running from the heavy
+       blow would answer that question instead — the layers would then be counted
+       on the wrong frame. */
+    until(() => { const l = live(); return l.rings === 0 && l.crests === 0 && l.arcs === 0; }, 2);
+    /* The arena is never empty — the titan breathes motes of its own — so the
+       tail is measured as a *rate* rather than a head count. `spawned` is the
+       cursor that hands out particle slots, so the increase between two reads is
+       exactly how many motes were born in between, whoever made them: read it
+       once with nothing in the air, then again with the comet flying, and the
+       difference is the tail. */
+    const moteRate = (frames) => {
+      const a = live().spawned;
+      run(frames * S);
+      return (live().spawned - a) / frames;
+    };
+    const calmRate = moteRate(8);
+    P.readyAt.bolt = 0;
+    tryAttack('bolt');
+    const airborne = until(() => live().bolts > 0, 0.6);
+    const flying = live();
+    ok('the bolt sets off as a comet', flying.bolts === 1,
+      'bolts=' + flying.bolts + ' after ' + airborne.toFixed(2) + 's');
+    /* Eight frames, not six: the arena's own breathing drifts by a tenth of a
+       mote a frame, and the tail only adds a couple, so the window has to be
+       long enough to average that drift out — at six frames, a busy CPU could
+       move the threshold past the effect. What is asserted is the *shape* of
+       the curve, that the field spawns motes faster with the comet up than it
+       does on its own, with a margin an order of magnitude above the drift. */
+    const tailRate = moteRate(8);                  // eight frames of flight
+    ok('the comet sheds a tail as it flies', live().bolts >= 1 && tailRate > calmRate + 1,
+      'motes a frame ' + calmRate.toFixed(1) + ' calm -> ' + tailRate.toFixed(1) + ' with the comet up');
+    const bang = until(() => live().crests > 0, 1.2);   // it arrives
+    const boom = live();
+    ok('it detonates in layers when it lands', boom.crests >= 2 && boom.rings >= 2 && boom.chromaOn,
+      'crests=' + boom.crests + ' rings=' + boom.rings + ' after ' + bang.toFixed(2) + 's');
+
+    /* --- (4) everything cleans up after itself ----------------------------- */
+    /* Win the wave first: a boss that keeps swinging spawns exactly the effects
+       being counted, and the check would then be measuring the boss instead of
+       the pools. */
+    B.hp = 1; tryAttack('quick');
+    until(() => G.state === 'victory', 1.2);
+    ok('the wave can still be won with all of this running', G.state === 'victory', G.state);
+    const quiet = until(() => { const l = live(); return l.rings === 0 && l.arcs === 0 &&
+      l.crests === 0 && l.flashes === 0 && l.bolts === 0; }, 6);
+    const after = live();
+    ok('every pooled effect cleans up after itself', quiet < 6,
+      'quiet ' + quiet.toFixed(2) + 's after the last blow');
+    ok('no pooled light is left burning', after.lightPeak === 0, 'peak=' + after.lightPeak);
+    ok('the aberration switches itself back off', !after.chromaOn, 'amount=' + after.chroma);
+    ok('bloom returns to its resting strength', Math.abs(after.bloom - after.bloomBase) < 0.001,
+      after.bloom + ' vs ' + after.bloomBase);
+    ok('no NaN reached the scene graph', nanScan().nanObjects === 0, JSON.stringify(nanScan()));
+    ok('the trail stops drawing once the blade is still', after.trailCore === 0,
+      'core=' + after.trailCore + ' verts');
+    /* Particles have no pool to read: they are one flat array, so the leak
+       question is answered by the shape of the curve instead. The arena never
+       stays empty for long — the next wave walks in on a timer, and the window
+       ends the moment it does — so this samples the *trough*: how far the field
+       fell on its own before that happened. A field that frees its slots comes
+       back down between hits; one that leaks stays up at the peak. An absolute
+       floor would be a different measurement every run, because it is the next
+       wave's timer, not the effects, that decides where the window stops. */
+    let trough = after.particles;
+    for (let i = 0; i < 96 && B.dead; i++) {
+      step(S);
+      trough = Math.min(trough, live().particles);
+    }
+    const drained = 1 - trough / after.particles;
+    ok('the particle field drains instead of accumulating', drained > 0.9,
+      after.particles + ' motes at the kill -> trough of ' + trough +
+      ' (' + Math.round(drained * 100) + '% gone)');
+    /* --- (5) the tableau: a heavy blow held mid-impact --------------------- */
+    /* One more fight, so the screenshot below lands on the freeze itself: the
+       shockwave open, the lens shoved, the frame fringed. */
+    const plan = LOGIC.planFor(LOGIC.BOSSES[0], 0);
+    G.state = 'fight'; spawnBoss(plan); hudBoss(plan);
+    run(1.4);                                      // the titan takes the stage
+    P.hp = P.maxHp;
+    P.readyAt.heavy = 0;                           // the harness may re-arm a move
+    tryAttack('heavy');
+    until(() => live().flashes > 0, 1.6);
+    run(2 * S);                                    // hold the freeze, not the whole beat
+    const held2 = live();
+    ok('the held frame is fringed and still frozen',
+      held2.chromaOn && held2.frozen > 0 && held2.rings >= 1 && held2.crests >= 2,
+      'chroma=' + held2.chromaAmount + ' frozen=' + held2.frozen + ' rings=' + held2.rings);
+    /* Aberration is a channel shift, so the picture changes without getting
+       darker. Measuring both is what separates it from a plain blur — and it is
+       the only way to see a post pass that is quietly switched off. The frame
+       has to be presented first: a capture steps the game without drawing, so
+       the buffer being read is from whenever the last draw happened. */
+    draw();
+    const abFrame = snapshot(), abLuma = lumaProbe();
+    V.chroma.enabled = false; draw();
+    const plainFrame = snapshot(), plainLuma = lumaProbe();
+    V.chroma.enabled = true; draw();
+    const shift = diffFrames(abFrame, plainFrame);
+    ok('aberration shifts colour without dimming the picture',
+      shift.changedFrac > 0.004 && Math.abs(abLuma.meanLuma - plainLuma.meanLuma) < 0.02,
+      'changed=' + shift.changedFrac + '%, luma ' + plainLuma.meanLuma + ' -> ' + abLuma.meanLuma);
+    /* The tableau also has to survive its own flash. An impact that white-outs
+       the arena stops being a picture of a fight: the titan, the blade and the
+       floor all dissolve into one blob. Measured rather than eyeballed — how
+       bright the middle of the frame is, and how much of it has clipped.
+       The budget is the one a heavy blow already spent before any of the juice
+       existed (luma 0.62, 42% of the middle clipped): a hit may flash, but it
+       may not cost the player the frame he is reading. */
+    const holdLum = lumaProbe();
+    const holdEdges = edgeProbe();
+    /* The same frame with the bloom pass off, as a diagnostic: the gap between
+       this number and the one above is how much of the glow is the bloom pass
+       rather than the lighting. */
+    bloom.enabled = false; draw();
+    const flatHold = lumaProbe();
+    bloom.enabled = true; draw();
+    ok('the frozen impact is bright without washing the arena out',
+      holdLum.meanLuma < 0.62 && holdLum.brightFrac < 0.42,
+      'luma=' + holdLum.meanLuma + ' clipped=' + holdLum.brightFrac);
+    /* ...and it still has to read as *brighter* than the fight around it, or
+       the fix above would be indistinguishable from switching the hit off.
+       `restLum` is the same arena, same camera, half a minute earlier with no
+       blow in the air. */
+    ok('and the blow is unmistakably brighter than the resting arena',
+      holdLum.brightFrac > restLum.brightFrac + 0.1,
+      'clipped ' + restLum.brightFrac + ' at rest -> ' + holdLum.brightFrac + ' on the hit');
+    /* Bright and clipped is only half of it: the frame still has to be a
+       *picture*. Edge energy is the average jump between neighbouring pixels, so
+       a white-out — where every pixel holds the same value — measures close to
+       zero, while a frame that still shows the titan, the blade and the grid
+       keeps its edges. */
+    ok('the frozen frame still reads as a picture',
+      holdEdges > restEdges * 0.5,
+      'edges ' + restEdges + ' at rest -> ' + holdEdges + ' on the hit');
+
+    report({ checks, passed: checks.filter((c) => c.pass).length,
+      failed: checks.filter((c) => !c.pass).length,
+      luma: { ...holdLum, rest: restLum.meanLuma, restClip: restLum.brightFrac },
+      vfx: { idleFloor: floor, restEdges, holdEdges, trail: { samples: trail.trailSamples, core: trail.trailCore,
+        halo: trail.trailHalo }, heavy: hit, bolt: boom, quietAfter: quiet,
+        held: held2, trough, drained, chromaShift: shift.changedFrac,
+        holdLuma: holdLum.meanLuma, holdClip: holdLum.brightFrac, bloomOff: flatHold.meanLuma,
+        calls: [calls0, renderer.info.render.calls] } });
+    /* Hold the frozen impact on screen: this mode's picture is the hit itself. */
+    requestAnimationFrame(function hold() { draw(); requestAnimationFrame(hold); });
+    return true;
   } else if (mode === 'bench') {
     run(1.5);
     const t0 = performance.now();
@@ -283,19 +683,23 @@ export function runCapture(A, mode) {
 
   draw();
   const lum = lumaProbe();
+  const edges = edgeProbe();
+  /* The same frame with the bloom pass switched off. The difference is the proof
+     that post-processing is really on — and it says how much of the glow in this
+     picture is the bloom rather than the lighting. */
+  bloom.enabled = false; draw();
+  const flat = lumaProbe();
+  bloom.enabled = true; draw();
   if (['gfx', 'idle', 'demon', 'ice', 'strike'].includes(mode)) {
-    /* Render the same frame twice, with and without the bloom pass: the
-       difference is the proof that post-processing is really on. */
-    bloom.enabled = false; draw();
-    const flat = lumaProbe();
-    bloom.enabled = true; draw();
     ok('bloom is spreading the highlights', lum.brightFrac >= flat.brightFrac,
       flat.brightFrac + ' -> ' + lum.brightFrac);
     ok('the frame is dark but not black', lum.meanLuma > 0.01 && lum.meanLuma < 0.6, 'luma=' + lum.meanLuma);
     ok('the frame has colour in it', lum.meanSat > 0.04, 'sat=' + lum.meanSat);
   }
   report(Object.assign({ checks, passed: checks.filter((c) => c.pass).length,
-    failed: checks.filter((c) => !c.pass).length }, lum));
+    failed: checks.filter((c) => !c.pass).length, lumaOff: flat.meanLuma,
+    brightOff: flat.brightFrac, edges },
+    fog ? { worst: fog } : {}, lum));
   /* Keep presenting the frozen frame. A capture renders once, and a canvas that
      never draws again does not always survive the trip to a screenshot — so the
      tableau is re-presented every frame without advancing any simulation. */

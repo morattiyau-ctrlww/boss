@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = normalize(join(fileURLToPath(new URL('.', import.meta.url)), '..'));
 const ALL = ['idle', 'telegraph', 'strike', 'dodge', 'heavy', 'bolt', 'combo', 'win', 'lose',
-  'demon', 'ice', 'gfx', 'bench', 'autoplay', 'audio'];
+  'demon', 'ice', 'gfx', 'vfx', 'bench', 'autoplay', 'audio', 'photo', 'arms'];
 
 const argv = process.argv.slice(2);
 const flag = (name, dflt) => {
@@ -117,16 +117,39 @@ for (const mode of list) {
   modes++;
   if (!raw) { console.log(pad(mode, 9) + 'NO PROBE (not reached in 60s)'); bad++; continue; }
   const j = JSON.parse(raw);
-  if (j.audioError) { console.log(pad(mode, 9) + 'THREW ' + j.audioError.split('\n')[0]); bad++; continue; }
+  /* A mode that throws leaves the game's own live probe behind, which has no
+     checks in it at all — silence that looks like a pass. Name the throw, and
+     dump whatever did come back, rather than reporting "0 checks". */
+  const threw = ['loadError', 'audioError', 'photoError'].find((k) => j[k]);
+  if (threw) { console.log(pad(mode, 9) + 'THREW ' + String(j[threw]).split('\n')[0]); bad++; continue; }
+  if (!Array.isArray(j.checks)) {
+    console.log(pad(mode, 9) + 'NO REPORT ' + JSON.stringify(j).slice(0, 240)); bad++; continue;
+  }
   const checks = j.checks || [];
   const failed = checks.filter((c) => !c.pass);
+  /* A mode that reports its own payload (photo) has no luma block: print a dash
+     rather than the word undefined. */
+  const num = (v, n) => (v == null ? 'n/a' : pad(v, n));
   total += checks.length;
   bad += failed.length + (j.errors || []).length + (j.nanObjects ? 1 : 0);
   console.log(pad(mode, 9) + 'checks ' + pad(j.passed + '/' + checks.length, 7) +
     'nan ' + pad(j.nanObjects, 5) + 'errors ' + pad((j.errors || []).length, 4) +
     (mode === 'audio'
       ? 'sounds ' + pad(j.audio.sounds, 6) + 'loop rms ' + pad(j.audio.musicRms, 8) + 'peak ' + j.audio.musicPeak
-      : 'calls ' + pad(j.calls, 5) + 'tris ' + pad(j.tris, 7) + 'state ' + j.state));
+      : mode === 'vfx' && j.vfx
+        ? 'trail ' + pad(j.vfx.trail.core, 4) + 'verts  chroma ' + pad(j.vfx.chromaShift, 7) +
+          'shift  hit ' + pad(j.vfx.heavy.lightPeak, 6) + 'cd  quiet ' + j.vfx.quietAfter + 's  freeze ' + j.vfx.held.frozen +
+          '  luma ' + pad(j.vfx.holdLuma, 6) + 'clip ' + j.vfx.holdClip + ' noBloom ' + j.vfx.bloomOff +
+          ' rest ' + pad(j.luma.rest, 6) + '/' + j.luma.restClip +
+          ' edges ' + j.vfx.holdEdges + '/' + j.vfx.restEdges + '  drain ' + j.vfx.trough + ' motes'
+        : 'calls ' + pad(j.calls, 5) + 'tris ' + pad(j.tris, 7) + 'state ' + pad(j.state, 7) +
+          ' luma ' + num(j.meanLuma, 6) + '/' + num(j.lumaOff, 6) +
+          ' bright ' + (j.brightOff == null ? num(j.brightFrac, 7)
+            : num(j.brightOff, 7) + '->' + num(j.brightFrac, 7)) +
+          (j.worst
+            ? ' clipped: median ' + j.worst.p50 + ' / 90th ' + j.worst.p90 + ' / worst ' + j.worst.clip +
+              ' over ' + j.worst.n + ' frames'
+            : ' edges ' + (j.edges == null ? 'n/a' : j.edges))));
   failed.forEach((c) => console.log('   x ' + c.name + '  [' + c.detail + ']'));
   if (shots) {
     const s = await send('Page.captureScreenshot', { format: 'png' });
